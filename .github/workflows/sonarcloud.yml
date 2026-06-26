@@ -32,7 +32,15 @@ jobs:
       - run: bun install --frozen-lockfile
       # lcov reporter is configured in bunfig.toml -> coverage/lcov.info
       - run: bun test --coverage
+      # Report the package version so SonarCloud's "previous version" new-code
+      # definition resets the baseline at each release. Single source: package.json
+      # (node is preinstalled on the runner). Read into a step output, then passed
+      # to the scanner via args (not interpolated into a shell command).
+      - id: pkg
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
       - uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
+        with:
+          args: -Dsonar.projectVersion=${{ steps.pkg.outputs.version }}
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
