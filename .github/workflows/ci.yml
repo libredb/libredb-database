@@ -21,11 +21,13 @@ jobs:
         with:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
-      - run: bun run gate
+      - id: gate
+        run: bun run gate
       # Secret scan in CI too (defense-in-depth: catches anything that bypassed
       # the pre-commit hook, e.g. a --no-verify commit). secretlint is an npm
       # devDep, so no system tool is needed.
-      - run: bun run secrets
+      - id: secrets
+        run: bun run secrets
       # Dependency audit: kept out of the inner `gate` (which stays offline) and
       # run here + in the pre-push hook, where network access is expected. Uses
       # `bun run audit` so CI and the hook share one ignore policy (package.json).
@@ -33,7 +35,30 @@ jobs:
       # dev-only transitive dep (changesets -> @manypkg/get-packages ->
       # read-yaml-file@1 -> js-yaml@3), never shipped (zero runtime deps), with no
       # upstream fix yet. Remove the --ignore once @manypkg bumps read-yaml-file.
-      - run: bun run audit
+      - id: audit
+        run: bun run audit
       # License tripwire: gates only RUNTIME deps (zero today). Fails if a
       # shipped dependency ever carries a non-permissive license.
-      - run: bun run license:check
+      - id: license
+        run: bun run license:check
+      # Render a job summary on the run page (no emoji, per repo convention).
+      # Bundle size is best-effort: re-measured here, shown as n/a if the build
+      # did not produce dist/ (e.g. the gate failed before the build step).
+      - name: Job summary
+        if: always()
+        run: |
+          BYTES=$(bun run size --json 2>/dev/null | jq -r '.[0].size // empty' || true)
+          if [ -n "$BYTES" ]; then KB=$(awk "BEGIN{printf \"%.2f\", $BYTES/1024}"); else KB="n/a"; fi
+          {
+            echo "## LibreDB CI"
+            echo ""
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            echo "| Gate (typecheck, format, lint, knip, build, size, test) | ${{ steps.gate.outcome }} |"
+            echo "| Secret scan (secretlint) | ${{ steps.secrets.outcome }} |"
+            echo "| Dependency audit (bun audit) | ${{ steps.audit.outcome }} |"
+            echo "| License tripwire (runtime deps) | ${{ steps.license.outcome }} |"
+            echo ""
+            echo "- Coverage: 100% line/function/statement (enforced by bunfig.toml)"
+            echo "- Bundle: ${KB} kB (min+brotli) / 4 kB budget"
+          } >> "$GITHUB_STEP_SUMMARY"

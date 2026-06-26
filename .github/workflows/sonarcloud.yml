@@ -44,3 +44,15 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
+      # Run summary on the run page (no emoji, per repo convention). The full
+      # results live on SonarCloud; this links straight to the dashboard.
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## SonarCloud analysis"
+            echo ""
+            echo "- Project version analyzed: \`${{ steps.pkg.outputs.version }}\`"
+            echo "- New code is measured since the previous version."
+            echo "- [Open the SonarCloud dashboard](https://sonarcloud.io/summary/overall?id=libredb_libredb-database)"
+          } >> "$GITHUB_STEP_SUMMARY"
