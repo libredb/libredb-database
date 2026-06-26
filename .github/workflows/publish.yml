@@ -34,3 +34,14 @@ jobs:
       - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPMJS_TOKEN }}
+      # Run summary on the run page (no emoji, per repo convention).
+      - name: Job summary
+        if: success()
+        run: |
+          V=$(node -p "require('./package.json').version")
+          {
+            echo "## Published to npm"
+            echo ""
+            echo "- Package: \`@libredb/libredb@${V}\`"
+            echo "- [View on npm](https://www.npmjs.com/package/@libredb/libredb/v/${V})"
+          } >> "$GITHUB_STEP_SUMMARY"
