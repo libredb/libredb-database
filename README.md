@@ -1,5 +1,10 @@
 # LibreDB
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/01-hero-dark.png">
+  <img alt="LibreDB - Multi-model without the magic. One core, three lenses, every line tested." src="docs/img/01-hero-light.png" width="100%">
+</picture>
+
 **Multi-model without the magic. One core, three lenses, every line tested.**
 
 [![npm version](https://img.shields.io/npm/v/@libredb/libredb.svg)](https://www.npmjs.com/package/@libredb/libredb)
@@ -81,6 +86,11 @@ Each lens has its own guide: [key-value](./docs/guides/key-value.md) ·
 
 ## How it works: one core, three lenses
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/02-lenses-dark.png">
+  <img alt="One core, three lenses: kv, document, and relational APIs over a single ordered key-value core (core.ts), reaching disk through one FileSystem seam." src="docs/img/02-lenses-light.png" width="100%">
+</picture>
+
 LibreDB has a single ordered byte key-value kernel (`src/core.ts`). Key-value, document, and relational
 are thin typed *lenses* over it — three faces of the same store. A relational table is physically a
 JSON document collection, which is physically ordered key-value entries built from composite keys like
@@ -122,6 +132,11 @@ flowchart TB
     CORE --> FS
 ```
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/03-trust-dark.png">
+  <img alt="Open at the edges, guarded at the core: lenses, query surface, catalog, adapters, Studio, and docs are open to contribute; core.ts is guarded with 100% line coverage, deterministic crash tests, and heavy review - everything reaches the store through one narrow transact() port." src="docs/img/03-trust-light.png" width="100%">
+</picture>
+
 **The file boundary is the trust boundary.** Below the line (`core.ts`) is guarded: heavy review and
 deterministic crash tests, because a bug there corrupts data. Above the line (lenses, query, catalog)
 is open and fast to contribute to, because the worst a bug can do is present a bad *view* — it reaches
@@ -149,6 +164,11 @@ These limits are deliberate v1 scope, not hidden gaps — LibreDB's strength com
 See the [Manifesto](./MANIFESTO.md).
 
 ## Reliability
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/04-reliability-dark.png">
+  <img alt="Crash recovery you can trust: a length-framed, CRC-32-checksummed write-ahead log fsync'd before commit; recovery truncates the last un-fsync'd record so what remains is always a valid committed prefix - proven by deterministic simulation testing." src="docs/img/04-reliability-light.png" width="100%">
+</picture>
 
 A transaction that returns has been written to a length-framed, CRC-32-checksummed write-ahead log and
 `fsync`'d *before* the commit becomes visible — so a committed write survives a crash, and a crash can
@@ -186,6 +206,11 @@ but the API may still change and it is not yet meant for production data.
   production-hardening milestones (directory fsync on first create, WAL compaction/checkpointing).
 
 ## The LibreDB family
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/05-family-dark.png">
+  <img alt="The LibreDB family: LibreDB (the database, this repo), LibreDB Studio (the open-source IDE for every database), and LibreDB Platform (the managed, team-oriented form of data) - three products, one access-model spine." src="docs/img/05-family-light.png" width="100%">
+</picture>
 
 LibreDB is the database in a three-product family that shares one access-model spine:
 
