@@ -55,11 +55,29 @@ The maintainer's working rules. They always apply.
   English in the repo.
 - **No emoji** anywhere — code, comments, commits, docs. Plain text.
 - **Conventional commits**, enforced by commitlint (`commit-msg` hook). PRs are squash-merged, so the
-  PR title becomes the changelog entry — keep it conventional.
+  PR title becomes the squashed commit — keep it conventional. (The user-facing changelog comes from
+  changesets, not commit messages — see Releases below.)
 - **No `Co-Authored-By` / AI-attribution trailer** in commit messages unless explicitly asked.
 - **Commit only when asked**, and never add a git remote or push unless asked.
 - This is a separate repo from `../libredb-studio` and `../libredb-platform`. Never mix commits across
   them.
+
+## Releases and changesets
+
+Versioning and the changelog are driven by [Changesets](https://github.com/changesets/changesets), not
+by commit messages.
+
+- **Add a changeset only for user-facing changes** — anything that reaches the published package
+  (`src/` runtime behavior, the public API, the shipped types). Run `bun run changeset`, choose the
+  semver bump, and write the changelog entry.
+- **No changeset is needed** for changes that never ship: CI/workflows, docs, the README, tests, the
+  DST harness (`src/sim/`), or internal refactors with no API change. Only `dist/` is published
+  (`files: ["dist"]`), so everything else is repo-only. Most PRs fall here — that is expected, not an
+  omission, so do not add an empty changeset just to have one.
+- **Releasing** (maintainer): `bun run changeset:version` consumes the pending changesets — it bumps
+  `package.json`, writes `CHANGELOG.md`, and runs `sync-version` to update the `version` constant in
+  `core.ts` (package.json is the single source of truth; a test backstops the sync). Commit that, then
+  create the matching git tag + GitHub Release; `publish.yml` runs the gate and publishes to npm.
 
 ## Family context
 
