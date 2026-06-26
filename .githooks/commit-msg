@@ -1,0 +1,4 @@
+#!/bin/sh
+# Enforce Conventional Commits (feeds the changelog and any future automated
+# release). Zero hook-manager dependency - wired via core.hooksPath.
+bun run commitlint --edit "$1"

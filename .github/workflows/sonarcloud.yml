@@ -1,0 +1,38 @@
+name: SonarCloud
+
+# CI-based SonarCloud analysis (required to ingest LCOV coverage; automatic
+# analysis must be DISABLED in the SonarCloud project settings). Inert until a
+# SONAR_TOKEN repository secret is configured - see docs/TOOLCHAIN.md and
+# sonar-project.properties for activation steps.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least-privilege: analysis only reads the repo; the Sonar token is a separate secret.
+permissions:
+  contents: read
+
+jobs:
+  sonarcloud:
+    name: analysis
+    # Skip on PRs from forks: GitHub does not expose secrets (SONAR_TOKEN) to
+    # fork-triggered runs, so the scan would fail through no fault of the PR.
+    # Sonar still runs on push to main and on same-repo PRs; fork contributions
+    # are analyzed after they merge to main.
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0 # full history for accurate new-code / blame attribution
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      # lcov reporter is configured in bunfig.toml -> coverage/lcov.info
+      - run: bun test --coverage
+      - uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io

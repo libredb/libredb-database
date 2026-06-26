@@ -1,0 +1,6 @@
+#!/bin/sh
+# Full verification before sharing: the same gate CI runs, plus a dependency
+# audit (kept out of the inner `gate` so local builds stay offline-hermetic).
+set -e
+bun run gate
+bun run audit

@@ -1,0 +1,39 @@
+name: CI
+
+# Mirrors the local truth gate (bun run gate) on every push and PR. Needs no
+# secrets, so it provides value the moment the repo lands on GitHub.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least-privilege default token (Scorecard Token-Permissions): the gate only reads the repo.
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - run: bun run gate
+      # Secret scan in CI too (defense-in-depth: catches anything that bypassed
+      # the pre-commit hook, e.g. a --no-verify commit). secretlint is an npm
+      # devDep, so no system tool is needed.
+      - run: bun run secrets
+      # Dependency audit: kept out of the inner `gate` (which stays offline) and
+      # run here + in the pre-push hook, where network access is expected. Uses
+      # `bun run audit` so CI and the hook share one ignore policy (package.json).
+      # Documented exception: GHSA-h67p-54hq-rp68 (js-yaml moderate ReDoS) — a
+      # dev-only transitive dep (changesets -> @manypkg/get-packages ->
+      # read-yaml-file@1 -> js-yaml@3), never shipped (zero runtime deps), with no
+      # upstream fix yet. Remove the --ignore once @manypkg bumps read-yaml-file.
+      - run: bun run audit
+      # License tripwire: gates only RUNTIME deps (zero today). Fails if a
+      # shipped dependency ever carries a non-permissive license.
+      - run: bun run license:check

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "oxc"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "warn",
+    "pedantic": "off",
+    "style": "off"
+  },
+  "rules": {
+    "oxc/approx-constant": "off",
+    "no-shadow": "off"
+  },
+  "ignorePatterns": ["dist/**", "coverage/**", "node_modules/**", ".remember/**"]
+}

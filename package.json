@@ -1,0 +1,87 @@
+{
+  "name": "@libredb/libredb",
+  "version": "0.0.4",
+  "description": "A small, readable, embeddable, multi-model database. One ordered key-value core, thin model lenses on top.",
+  "keywords": [
+    "database",
+    "embedded",
+    "embeddable",
+    "key-value",
+    "document",
+    "relational",
+    "multi-model",
+    "typescript",
+    "bun"
+  ],
+  "homepage": "https://github.com/libredb/libredb-database#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/libredb/libredb-database.git"
+  },
+  "bugs": {
+    "url": "https://github.com/libredb/libredb-database/issues"
+  },
+  "type": "module",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "sideEffects": false,
+  "engines": {
+    "bun": ">=1.3.0",
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "format": "biome format src eslint.config.js",
+    "format:fix": "biome format --write src eslint.config.js",
+    "lint": "oxlint && eslint .",
+    "test": "bun test --coverage",
+    "build": "tsc --project tsconfig.build.json",
+    "size": "size-limit",
+    "attw": "rm -rf .attw && bun pm pack --quiet --destination .attw && attw .attw/*.tgz --profile esm-only",
+    "publint": "publint",
+    "audit": "bun audit --ignore GHSA-h67p-54hq-rp68",
+    "secrets": "secretlint '**/*'",
+    "commitlint": "commitlint",
+    "license:check": "sh scripts/license-check.sh",
+    "changeset": "changeset",
+    "sync-version": "bun scripts/sync-version.ts",
+    "changeset:version": "changeset version && bun run sync-version",
+    "knip": "knip-bun",
+    "knip:production": "knip-bun --production --strict",
+    "prepublishOnly": "bun run build && bun run attw && bun run publint",
+    "prepare": "git config core.hooksPath .githooks",
+    "gate": "bun run typecheck && bun run format && bun run lint && bun run knip && bun run build && bun run size && bun run test"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.4",
+    "@biomejs/biome": "^2.5.1",
+    "@changesets/cli": "2.31.0",
+    "@commitlint/cli": "21.1.0",
+    "@commitlint/config-conventional": "21.1.0",
+    "@secretlint/secretlint-rule-preset-recommend": "13.0.2",
+    "@size-limit/preset-small-lib": "^12.1.0",
+    "@types/bun": "latest",
+    "eslint": "^10.0.0",
+    "knip": "^6.20.0",
+    "oxlint": "^1.71.0",
+    "publint": "^0.3.21",
+    "secretlint": "13.0.2",
+    "size-limit": "^12.1.0",
+    "typescript": "^6.0.0",
+    "typescript-eslint": "^8.0.0"
+  }
+}

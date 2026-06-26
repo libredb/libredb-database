@@ -1,0 +1,20 @@
+{
+  // Build config: emits JS + declaration files to dist/ for the npm package.
+  // Only the library source (src/) is compiled; tests are excluded from the build.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": true,
+    // Emit .d.ts purely from explicit annotations (no whole-program type
+    // inference), making declaration emit fast, parallelizable, and TS7
+    // (tsgo) ready. Lives here, not in the base config: the base sets
+    // noEmit/no-declaration, where isolatedDeclarations errors with TS5069.
+    "isolatedDeclarations": true
+  },
+  // src/sim/ is the deterministic-simulation test harness (SimFS, DESIGN.md
+  // 6.4): test-only, never shipped, so it is excluded from the package build.
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts", "src/sim/**"]
+}

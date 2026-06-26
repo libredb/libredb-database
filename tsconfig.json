@@ -1,0 +1,36 @@
+{
+  // Base config: strict type-checking for development, tests, and `tsc --noEmit`.
+  // Build emit is configured separately in tsconfig.build.json.
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2024"],
+    "types": ["bun"],
+
+    // Match TypeScript 7.0's deterministic union/type ordering now, so the
+    // eventual native (tsgo) migration is a no-op for type display and tests.
+    "stableTypeOrdering": true,
+
+    // Strictness: reliability is non-negotiable, so every guard rail is on.
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+
+    // Write honest `.ts` import specifiers in source (Bun resolves them
+    // natively); the build rewrites them to `.js` so emitted dist is valid
+    // Node ESM. Requires TypeScript 5.7+.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src", "eslint.config.js"]
+}

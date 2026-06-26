@@ -1,0 +1,16 @@
+[test]
+# Reliability is non-negotiable: the kernel is held to full line coverage.
+# Tests run with coverage on by default; the gate fails below the threshold.
+coverage = true
+# text for local console output; lcov (coverage/lcov.info) for SonarCloud's
+# CI-based coverage ingestion. coverage/ is git-ignored.
+coverageReporter = ["text", "lcov"]
+coverageSkipTestFiles = true
+# Start at 100% and hold it. When the kernel lands this stays the bar for core.ts.
+# Bun enforces line/function/statement (not branch); all three held at 100%.
+coverageThreshold = { line = 1.0, function = 1.0, statement = 1.0 }
+
+[install]
+# Pin exact versions on `bun add` for reproducible installs. The lockfile
+# already locks the resolved tree; this keeps package.json ranges exact too.
+exact = true

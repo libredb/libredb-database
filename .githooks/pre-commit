@@ -1,0 +1,7 @@
+#!/bin/sh
+# Fast pre-commit checks. The full gate runs on pre-push.
+# Wired via `git config core.hooksPath .githooks` (the package.json prepare
+# script), so there is no hook-manager dependency to install.
+set -e
+bun run secrets
+bun run format

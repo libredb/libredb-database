@@ -1,0 +1,8 @@
+[
+  {
+    "name": "public entry (min+brotli)",
+    "path": "dist/index.js",
+    "ignore": ["node:fs", "node:os", "node:path"],
+    "limit": "4 kB"
+  }
+]
