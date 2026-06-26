@@ -3,6 +3,9 @@
 **Multi-model without the magic. One core, three lenses, every line tested.**
 
 [![npm version](https://img.shields.io/npm/v/@libredb/libredb.svg)](https://www.npmjs.com/package/@libredb/libredb)
+[![CI](https://github.com/libredb/libredb-database/actions/workflows/ci.yml/badge.svg)](https://github.com/libredb/libredb-database/actions/workflows/ci.yml)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=libredb_libredb-database&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=libredb_libredb-database)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=libredb_libredb-database&metric=coverage)](https://sonarcloud.io/summary/new_code?id=libredb_libredb-database)
 [![license](https://img.shields.io/npm/l/@libredb/libredb.svg)](./LICENSE)
 [![types: included](https://img.shields.io/badge/types-included-blue.svg)](https://www.typescriptlang.org/)
 [![dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](./package.json)
