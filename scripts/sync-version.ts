@@ -1,10 +1,11 @@
 // Single source of truth for the version is package.json. This propagates it to
-// the two other places that must agree: the exported `version` constant in
-// src/core.ts (so `changeset version`, which only touches package.json +
-// CHANGELOG, cannot leave the public API reporting a stale version) and the
-// `version` field in jsr.json (the JSR manifest, which carries its own version).
-// The "version matches package.json" tests in core.test.ts are the backstop if
-// this ever fails to run.
+// the places that must agree: the exported `version` constant in src/core.ts (so
+// `changeset version`, which only touches package.json + CHANGELOG, cannot leave
+// the public API reporting a stale version), the `version` field in jsr.json (the
+// JSR manifest, which carries its own version), and the pinned esm.sh example in
+// README.md (so the CDN snippet never drifts behind a release). The "version
+// matches package.json" tests in core.test.ts are the backstop if this ever
+// fails to run.
 //
 // Kept OUT of src/core.ts (no runtime package.json read in the guarded core)
 // and out of the gate; it runs only in the release flow (changeset:version).
@@ -32,3 +33,14 @@ if (!jsrPattern.test(jsrBefore)) {
 
 writeFileSync(jsrPath, jsrBefore.replace(jsrPattern, `"version": "${pkg.version}"`));
 console.log(`sync-version: jsr.json version -> ${pkg.version}`);
+
+const readmePath = new URL("../README.md", import.meta.url);
+const readmePattern = /esm\.sh\/@libredb\/libredb@[\w.-]+/g;
+const readmeBefore = readFileSync(readmePath, "utf8");
+
+if (!readmeBefore.includes("esm.sh/@libredb/libredb@")) {
+  throw new Error("sync-version: esm.sh pin not found in README.md");
+}
+
+writeFileSync(readmePath, readmeBefore.replace(readmePattern, `esm.sh/@libredb/libredb@${pkg.version}`));
+console.log(`sync-version: README.md esm.sh pin -> ${pkg.version}`);
