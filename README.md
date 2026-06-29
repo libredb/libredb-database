@@ -145,7 +145,9 @@ npx libredb import data.libredb seed.json # bulk-set from a JSON object, atomica
 ```
 
 Read commands open the file read-only, so inspection never mutates it. Write commands take an
-advisory `<path>.lock` to refuse a second concurrent writer; pass `--force` to override a stale lock.
+advisory `<path>.lock` to refuse a second concurrent writer. Use `--force` only to clear a stale
+lock left by a crashed writer: the lock is advisory and LibreDB is single-process, so two writers
+that force at the same time can still race and corrupt the file.
 
 Prefer a standalone binary with no Node or Bun installed? Each release attaches self-contained
 executables (Linux, macOS, Windows; x64 and arm64) with `.sha256` checksums on its
