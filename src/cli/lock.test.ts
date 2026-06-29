@@ -69,6 +69,15 @@ test("a non-lock IO error is surfaced, not misreported as locked", () => {
   expect((caught as Error).message).not.toMatch(/locked/i);
 });
 
+test("--force clears an empty stray lock (e.g. a crash before the sentinel was written)", () => {
+  const path = tempPath();
+  writeFileSync(`${path}.lock`, ""); // empty stray, not foreign user data
+  const lock = acquireLock(path, true);
+  expect(existsSync(`${path}.lock`)).toBe(true);
+  lock.release();
+  expect(existsSync(`${path}.lock`)).toBe(false);
+});
+
 test("--force refuses to delete a file that is not a libredb lock", () => {
   const path = tempPath();
   writeFileSync(`${path}.lock`, "this is the user's own data, not a lock");

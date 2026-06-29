@@ -8,7 +8,7 @@
  * `--force` drops a stale lock and proceeds. The lock is always released after
  * the write (see withWriteDb in run.ts).
  */
-import { closeSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 
 /** A held lock. Call {@link Lock.release} once the write is done. */
 export interface Lock {
@@ -33,6 +33,8 @@ export function acquireLock(path: string, force: boolean): Lock {
       closeSync(fd); // always release the descriptor, even if the write throws
     }
   } catch (error) {
+    // A failed sentinel write (e.g. ENOSPC) leaves an EMPTY <path>.lock behind;
+    // that stray is recoverable because dropOwnLock treats an empty file as ours.
     // Only an existing lock file (EEXIST) means "locked". Surface any other IO
     // error (missing directory, permissions, ...) unchanged, so a real problem
     // is not misreported as a held lock.
@@ -49,17 +51,16 @@ export function acquireLock(path: string, force: boolean): Lock {
   };
 }
 
-/** Remove an existing libredb lock so a forced acquire can proceed. Refuses to
- * touch a file that is not a libredb lock, so `--force` can never delete
- * unrelated user data that happens to share the `.lock` name. */
+/** Remove an existing libredb lock so a forced acquire can proceed. A lock this
+ * tool created carries the SENTINEL; an empty file is a stray from a crash or a
+ * failed sentinel write (also ours) and is safe to drop. Any other content means
+ * the file is not our lock, so `--force` refuses it rather than delete unrelated
+ * user data that happens to share the `.lock` name. A read error other than "no
+ * such file" (e.g. EACCES) propagates instead of being silently swallowed. */
 function dropOwnLock(lockPath: string): void {
-  let contents: string;
-  try {
-    contents = readFileSync(lockPath, "utf8");
-  } catch {
-    return; // no lock file to drop
-  }
-  if (!contents.startsWith(SENTINEL)) {
+  if (!existsSync(lockPath)) return; // nothing to drop
+  const contents = readFileSync(lockPath, "utf8");
+  if (contents !== "" && !contents.startsWith(SENTINEL)) {
     throw new Error(`libredb: refusing to remove ${lockPath} with --force: not a libredb lock file`);
   }
   rmSync(lockPath, { force: true });
