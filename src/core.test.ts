@@ -17,6 +17,17 @@ test("the public entry re-exports the kernel version", () => {
   expect(exportedVersion).toBe(version);
 });
 
+test("the JSR manifest version matches package.json", async () => {
+  // jsr.json carries its own version field; sync-version.ts keeps it in step with
+  // package.json during a release. This backstops that, the way the core check
+  // above backstops the core.ts constant.
+  const [pkg, jsr] = (await Promise.all([import("../package.json"), import("../jsr.json")])) as [
+    { version: string },
+    { version: string },
+  ];
+  expect(jsr.version).toBe(pkg.version);
+});
+
 test("the public entry exposes a usable kv lens over an opened database", () => {
   const db = open();
   const store = kv(db);

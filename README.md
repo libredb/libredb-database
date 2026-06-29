@@ -84,6 +84,37 @@ Each lens has its own guide: [key-value](./docs/guides/key-value.md) ·
 [document](./docs/guides/document.md) · [relational](./docs/guides/relational.md) ·
 [catalog](./docs/guides/catalog.md).
 
+## Install elsewhere: JSR, CDN, and the browser
+
+LibreDB is the same ESM-only package everywhere; only how you reach it changes.
+
+**JSR** — published to [jsr.io](https://jsr.io/@libredb/libredb) alongside npm:
+
+```sh
+bunx jsr add @libredb/libredb
+# or: npx jsr add @libredb/libredb / deno add jsr:@libredb/libredb
+```
+
+**CDN** — every release is served from the npm registry by the usual CDNs. Pin a version:
+
+```ts
+import { open, kv } from "https://esm.sh/@libredb/libredb@0.0.4";
+```
+
+**Browser** — a dedicated entry that imports nothing from `node:`, so it bundles for the browser
+cleanly. Its `open` carries no default filesystem: an in-memory database works anywhere, and a
+path-backed open takes a filesystem you inject (e.g. a future OPFS adapter).
+
+```ts
+import { open, kv } from "@libredb/libredb/browser";
+
+const db = open(); // in-memory; durable persistence is a roadmap item
+kv(db).set("greeting", "hello");
+```
+
+A browser-targeting bundler resolves the browser build automatically via the package's `browser`
+export condition, so importing the main `@libredb/libredb` entry works too.
+
 ## How it works: one core, three lenses
 
 <picture>

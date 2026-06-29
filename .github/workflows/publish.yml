@@ -1,7 +1,12 @@
 name: Publish
 
-# Publishes to npm ONLY when a GitHub Release is published. It never runs on
-# push or pull_request, so creating the tag + release is the single trigger.
+# Publishes to npm and JSR ONLY when a GitHub Release is published. It never runs
+# on push or pull_request, so creating the tag + release is the single trigger.
+#
+# JSR (one-time setup by the maintainer before the first JSR release): create the
+# `@libredb` scope on jsr.io, create the `libredb` package, and link this GitHub
+# repository to it. That linkage is what lets the `jsr` job below authenticate via
+# OIDC (`id-token: write`) with no token or secret.
 on:
   release:
     types: [published]
@@ -44,4 +49,32 @@ jobs:
             echo ""
             echo "- Package: \`@libredb/libredb@${V}\`"
             echo "- [View on npm](https://www.npmjs.com/package/@libredb/libredb/v/${V})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  jsr:
+    name: JSR publish
+    # Runs only after npm publish succeeds (npm is the primary registry and has
+    # already run the full gate), so JSR mirrors exactly what npm shipped.
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC: token-less JSR publish via the repo-package linkage
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      # JSR publishes from source and runs its own slow-types check; no build or
+      # dependency install is needed (the source has no external runtime deps).
+      - run: bunx jsr publish
+      - name: Job summary
+        if: success()
+        run: |
+          V=$(node -p "require('./package.json').version")
+          {
+            echo "## Published to JSR"
+            echo ""
+            echo "- Package: \`@libredb/libredb@${V}\`"
+            echo "- [View on JSR](https://jsr.io/@libredb/libredb@${V})"
           } >> "$GITHUB_STEP_SUMMARY"
