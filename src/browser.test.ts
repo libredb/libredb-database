@@ -14,7 +14,18 @@ import { dirname, resolve } from "node:path";
 
 import { expect, test } from "bun:test";
 
-import { catalog, CATALOG_PREFIX, doc, isReservedKey, kv, open, RESERVED_MARKER, table, version } from "./browser.ts";
+import {
+  type BrowserOpenOptions,
+  catalog,
+  CATALOG_PREFIX,
+  doc,
+  isReservedKey,
+  kv,
+  open,
+  RESERVED_MARKER,
+  table,
+  version,
+} from "./browser.ts";
 
 test("an in-memory database works through the browser entry", () => {
   const db = open();
@@ -24,8 +35,19 @@ test("an in-memory database works through the browser entry", () => {
   db.close();
 });
 
-test("a path-backed open through the browser entry throws (no default fs)", () => {
-  expect(() => open({ path: "should-not-be-created" })).toThrow(/filesystem/i);
+test("a path-backed open with no fs still throws at runtime (JS callers)", () => {
+  // BrowserOpenOptions makes this a compile error for TS users, but a JS
+  // consumer can still reach it — the kernel's runtime guard is the safety net.
+  const openUntyped = open as (options: unknown) => unknown;
+  expect(() => openUntyped({ path: "should-not-be-created" })).toThrow(/filesystem/i);
+});
+
+test("BrowserOpenOptions requires fs whenever a path is given (compile-time)", () => {
+  // Locks the type-level guarantee: if this assignment ever stops being a type
+  // error, the directive below becomes unused and the gate fails. No runtime call.
+  // @ts-expect-error a path-backed open must also provide fs
+  const pathWithoutFs: BrowserOpenOptions = { path: "x" };
+  expect(pathWithoutFs).toBeDefined();
 });
 
 test("the browser entry exposes the full lens surface", () => {
