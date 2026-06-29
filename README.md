@@ -115,6 +115,23 @@ kv(db).set("greeting", "hello");
 A browser-targeting bundler resolves the browser build automatically via the package's `browser`
 export condition, so importing the main `@libredb/libredb` entry works too.
 
+## Command-line tool
+
+The package ships a `libredb` bin for inspecting and editing `.libredb` files — no code required:
+
+```sh
+npx libredb inspect data.libredb          # namespaces, kinds, and table schemas
+npx libredb stats data.libredb            # file size and namespace counts
+npx libredb get data.libredb user:1       # print one value
+npx libredb scan data.libredb user:       # print key=value under a prefix
+npx libredb set data.libredb user:1 Ada   # set a key
+npx libredb delete data.libredb user:1    # remove a key
+npx libredb import data.libredb seed.json # bulk-set from a JSON object, atomically
+```
+
+Read commands open the file read-only, so inspection never mutates it. Write commands take an
+advisory `<path>.lock` to refuse a second concurrent writer; pass `--force` to override a stale lock.
+
 ## How it works: one core, three lenses
 
 <picture>

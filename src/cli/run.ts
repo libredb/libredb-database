@@ -8,15 +8,18 @@
  *
  * This is open-edge tooling over the public API, not kernel code: it adds no
  * durability logic. Read commands (inspect/stats/get/scan) open through the
- * read-only filesystem adapter so inspecting a file never mutates it.
+ * read-only filesystem adapter so inspecting a file never mutates it. Write
+ * commands (set/delete/import) take an advisory lock first, and import commits
+ * all keys in one transaction so a bulk load is atomic.
  */
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { parseArgs } from "node:util";
 
 import type { Database } from "../core.ts";
 import { open } from "../index.ts";
-import { catalog } from "../lens/catalog.ts";
+import { catalog, isReservedKey } from "../lens/catalog.ts";
 import { kv } from "../lens/kv.ts";
+import { acquireLock } from "./lock.ts";
 import { readonlyFileSystem } from "./readonly-fs.ts";
 
 /** Where the CLI writes its output. One call is one line; the sink adds newlines. */
@@ -25,14 +28,32 @@ interface Io {
   err(line: string): void;
 }
 
+/** Everything a command handler needs: the file path, the command's positional
+ * arguments (everything after the path), the IO sink, and the `--force` flag. */
+interface Ctx {
+  path: string;
+  args: string[];
+  io: Io;
+  force: boolean;
+}
+
+const encoder = new TextEncoder();
+const utf8 = (s: string): Uint8Array => encoder.encode(s);
+
 const USAGE = [
   "libredb - inspect and edit .libredb files",
   "",
   "Usage:",
-  "  libredb inspect <path>          List each namespace, its kind, and table schemas",
-  "  libredb stats <path>            Summarize the file: size and namespace counts",
-  "  libredb get <path> <key>        Print the value stored at a key",
-  "  libredb scan <path> <prefix>    Print key=value for every key under a prefix",
+  "  libredb inspect <path>             List each namespace, its kind, and table schemas",
+  "  libredb stats <path>               Summarize the file: size and namespace counts",
+  "  libredb get <path> <key>           Print the value stored at a key",
+  "  libredb scan <path> <prefix>       Print key=value for every key under a prefix",
+  "  libredb set <path> <key> <value>   Set a key to a value",
+  "  libredb delete <path> <key>        Remove a key",
+  "  libredb import <path> <file.json>  Bulk-set keys from a JSON object (one atomic commit)",
+  "",
+  "Options:",
+  "  --force                            Override an existing write lock",
 ].join("\n");
 
 /** Open `path` read-only, run `fn`, and always close — so a read leaves the file
@@ -46,7 +67,23 @@ const withReadDb = <T>(path: string, fn: (db: Database) => T): T => {
   }
 };
 
-function inspect(path: string, _arg: string | undefined, io: Io): number {
+/** Take the advisory lock, open `path` for writing, run `fn`, then always close
+ * and release — so a crash mid-write cannot leave the lock stranded. */
+const withWriteDb = <T>(path: string, force: boolean, fn: (db: Database) => T): T => {
+  const lock = acquireLock(path, force);
+  try {
+    const db = open({ path });
+    try {
+      return fn(db);
+    } finally {
+      db.close();
+    }
+  } finally {
+    lock.release();
+  }
+};
+
+function inspect({ path, io }: Ctx): number {
   return withReadDb(path, (db) => {
     const registry = catalog(db);
     io.out(`${path}  ${statSync(path).size} bytes`);
@@ -62,7 +99,7 @@ function inspect(path: string, _arg: string | undefined, io: Io): number {
   });
 }
 
-function stats(path: string, _arg: string | undefined, io: Io): number {
+function stats({ path, io }: Ctx): number {
   return withReadDb(path, (db) => {
     const registry = catalog(db);
     const counts = { kv: 0, document: 0, relational: 0 };
@@ -73,7 +110,8 @@ function stats(path: string, _arg: string | undefined, io: Io): number {
   });
 }
 
-function get(path: string, key: string | undefined, io: Io): number {
+function get({ path, args, io }: Ctx): number {
+  const [key] = args;
   if (key === undefined) {
     io.err("missing <key>");
     return 2;
@@ -89,7 +127,8 @@ function get(path: string, key: string | undefined, io: Io): number {
   });
 }
 
-function scan(path: string, prefix: string | undefined, io: Io): number {
+function scan({ path, args, io }: Ctx): number {
+  const [prefix] = args;
   if (prefix === undefined) {
     io.err("missing <prefix>");
     return 2;
@@ -100,31 +139,98 @@ function scan(path: string, prefix: string | undefined, io: Io): number {
   });
 }
 
-/** The read commands, keyed by name. Each takes (path, optional arg, io). */
-const commands: Record<string, (path: string, arg: string | undefined, io: Io) => number> = {
+function set({ path, args, io, force }: Ctx): number {
+  const [key, value] = args;
+  if (key === undefined || value === undefined) {
+    io.err("missing <key> <value>");
+    return 2;
+  }
+  if (isReservedKey(key)) {
+    io.err(`refusing to write a reserved key: ${key}`);
+    return 2;
+  }
+  return withWriteDb(path, force, (db) => {
+    const { changed } = kv(db).set(key, value);
+    io.out(`set ${key} (${changed} changed)`);
+    return 0;
+  });
+}
+
+function remove({ path, args, io, force }: Ctx): number {
+  const [key] = args;
+  if (key === undefined) {
+    io.err("missing <key>");
+    return 2;
+  }
+  return withWriteDb(path, force, (db) => {
+    const { changed } = kv(db).delete(key);
+    io.out(`delete ${key} (${changed} removed)`);
+    return 0;
+  });
+}
+
+function importKeys({ path, args, io, force }: Ctx): number {
+  const [file] = args;
+  if (file === undefined) {
+    io.err("missing <file>");
+    return 2;
+  }
+  const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    io.err("import expects a JSON object of string values");
+    return 2;
+  }
+  const pairs: [string, string][] = [];
+  for (const [key, value] of Object.entries(parsed)) {
+    if (typeof value !== "string") {
+      io.err("import expects a JSON object of string values");
+      return 2;
+    }
+    if (isReservedKey(key)) {
+      io.err(`import: refusing to write a reserved key: ${key}`);
+      return 2;
+    }
+    pairs.push([key, value]);
+  }
+  return withWriteDb(path, force, (db) => {
+    // One transaction for the whole load: a bulk import either lands entirely or,
+    // on a crash mid-write, not at all (recovery discards the torn record).
+    db.transact((tx) => {
+      for (const [key, value] of pairs) tx.set(utf8(key), utf8(value));
+    });
+    io.out(`import ${pairs.length} keys`);
+    return 0;
+  });
+}
+
+/** The commands, keyed by name. Each takes the parsed {@link Ctx}. */
+const commands: Record<string, (ctx: Ctx) => number> = {
   inspect,
   stats,
   get,
   scan,
+  set,
+  delete: remove,
+  import: importKeys,
 };
 
 export function run(argv: string[], io: Io): number {
   let positionals: string[];
-  let help: boolean | undefined;
+  let values: { help?: boolean; force?: boolean };
   try {
     const parsed = parseArgs({
       args: argv,
       allowPositionals: true,
-      options: { help: { type: "boolean", short: "h" } },
+      options: { help: { type: "boolean", short: "h" }, force: { type: "boolean" } },
     });
     positionals = parsed.positionals;
-    help = parsed.values.help;
+    values = parsed.values;
   } catch (error) {
     io.err(error instanceof Error ? error.message : String(error));
     return 2;
   }
 
-  if (help === true || positionals.length === 0) {
+  if (values.help === true || positionals.length === 0) {
     io.out(USAGE);
     return 0;
   }
@@ -143,7 +249,7 @@ export function run(argv: string[], io: Io): number {
   }
 
   try {
-    return handler(path, positionals[2], io);
+    return handler({ path, args: positionals.slice(2), io, force: values.force === true });
   } catch (error) {
     io.err(error instanceof Error ? error.message : String(error));
     return 1;
