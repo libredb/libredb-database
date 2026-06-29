@@ -30,12 +30,13 @@ These facts shape every decision and were verified against the source, not memor
   and the `catalog` registry sit on top (`src/index.ts`). Synchronous throughout
   (`transact`, `fsyncSync`). Sync core is a ratified DESIGN decision; an async
   face may be layered later as an adapter over the sync core.
-- **node:fs coupling.** `core.ts` statically imports `node:fs` at module top
-  (`import { ... } from "node:fs"`). The `FileSystem` seam already exists and the
-  default `nodeFileSystem()` is only used when a `path` is given — but the static
-  import means importing the package at all drags `node:fs` into the import graph,
-  breaking browser use even for in-memory (`path`-less) databases. This is the
-  single linchpin blocking the browser channel.
+- **node:fs coupling (pre-Phase-0 baseline; resolved by this work).** At the start
+  of this work, `core.ts` statically imported `node:fs` at module top
+  (`import { ... } from "node:fs"`). The `FileSystem` seam already existed and the
+  default `nodeFileSystem()` was only used when a `path` was given — but the static
+  import meant importing the package at all dragged `node:fs` into the import graph,
+  breaking browser use even for in-memory (`path`-less) databases. This was the
+  single linchpin blocking the browser channel, and Phase 0 below removes it.
 - **File format.** A `.libredb` file IS the write-ahead log; there is no separate
   data file. Record framing: `[u32 payloadLength][u32 crc32(payload)][payload]`,
   where payload is a sequence of ops (`[1 byte kind][u32 keyLen][key]`, and for a

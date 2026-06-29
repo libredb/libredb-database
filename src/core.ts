@@ -143,12 +143,13 @@ export interface WalFile {
 export interface OpenOptions {
   readonly path?: string;
   /**
-   * The filesystem the write-ahead log runs on. Required for a path-backed open:
-   * the kernel carries no default, so omitting it with a `path` throws. (The
-   * Node entry defaults this to a `node:fs` adapter; the browser entry has none.)
-   * Injecting one lets tests simulate crashes and IO faults deterministically
-   * (DESIGN.md section 6.4). Ignored when there is no `path` (an in-memory
-   * database never touches a filesystem).
+   * The filesystem the write-ahead log runs on. Optional at the type level, but a
+   * path-backed open needs one at runtime: the kernel and the browser entry throw
+   * when `path` is given without `fs`, while the Node entry (index.ts) supplies a
+   * `node:fs` adapter by default so `open({ path })` works there. Injecting one
+   * lets tests simulate crashes and IO faults deterministically (DESIGN.md section
+   * 6.4). Ignored when there is no `path` (an in-memory database never touches a
+   * filesystem).
    */
   readonly fs?: FileSystem;
 }

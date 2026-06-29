@@ -1,5 +1,5 @@
-# Keep the build context tiny: the image only needs src/ + the tsconfigs to
-# compile the CLI. Everything else is excluded.
+# Keep the build context tiny: the image only needs src/ to compile the CLI
+# (bun build --compile bundles src directly). Everything else is excluded.
 node_modules
 dist
 coverage

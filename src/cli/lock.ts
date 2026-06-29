@@ -29,8 +29,15 @@ export function acquireLock(path: string, force: boolean): Lock {
     const fd = openSync(lockPath, "wx"); // "wx": exclusive create, fails if it exists
     writeSync(fd, SENTINEL);
     closeSync(fd);
-  } catch {
-    throw new Error(`libredb: ${path} is locked (${lockPath}); another writer may be active — use --force to override`);
+  } catch (error) {
+    // Only an existing lock file (EEXIST) means "locked". Surface any other IO
+    // error (missing directory, permissions, ...) unchanged, so a real problem
+    // is not misreported as a held lock.
+    if ((error as { code?: string }).code !== "EEXIST") throw error;
+    throw new Error(
+      `libredb: ${path} is locked (${lockPath}); another writer may be active — use --force to override`,
+      { cause: error },
+    );
   }
   return {
     release() {

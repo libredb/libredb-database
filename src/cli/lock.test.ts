@@ -55,6 +55,20 @@ test("--force with no existing lock simply acquires", () => {
   lock.release();
 });
 
+test("a non-lock IO error is surfaced, not misreported as locked", () => {
+  // A lock path inside a directory that does not exist fails with ENOENT; that
+  // must not be reported as "locked" (which would send the user down --force).
+  const bogus = join(tmpdir(), "libredb-no-such-dir-xyz", "db");
+  let caught: unknown;
+  try {
+    acquireLock(bogus, false);
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(Error);
+  expect((caught as Error).message).not.toMatch(/locked/i);
+});
+
 test("--force refuses to delete a file that is not a libredb lock", () => {
   const path = tempPath();
   writeFileSync(`${path}.lock`, "this is the user's own data, not a lock");
