@@ -1,6 +1,6 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "entry": ["src/index.ts!", "src/browser.ts!", "src/**/*.test.ts"],
+  "entry": ["src/index.ts!", "src/browser.ts!", "src/cli/main.ts!", "src/**/*.test.ts"],
   "project": ["src/**/*.ts"],
   "ignoreDependencies": [
     "@secretlint/secretlint-rule-preset-recommend"

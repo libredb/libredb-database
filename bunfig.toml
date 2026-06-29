@@ -6,6 +6,11 @@ coverage = true
 # CI-based coverage ingestion. coverage/ is git-ignored.
 coverageReporter = ["text", "lcov"]
 coverageSkipTestFiles = true
+# The bin shim (cli/main.ts) is pure process glue — shebang, process.argv,
+# stdout/stderr and exit code — with all behaviour in cli/run.ts (held at 100%).
+# It cannot be line-covered without spawning a process, so it is excluded here
+# and validated behaviourally by an end-to-end smoke test (cli/main.test.ts).
+coveragePathIgnorePatterns = ["src/cli/main.ts"]
 # Start at 100% and hold it. When the kernel lands this stays the bar for core.ts.
 # Bun enforces line/function/statement (not branch); all three held at 100%.
 coverageThreshold = { line = 1.0, function = 1.0, statement = 1.0 }
