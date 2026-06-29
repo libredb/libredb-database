@@ -137,6 +137,14 @@ executables (Linux, macOS, Windows; x64 and arm64) with `.sha256` checksums on i
 [GitHub Release](https://github.com/libredb/libredb-database/releases). Or build one locally with
 `bun run compile`.
 
+Or run the CLI from a container (multi-arch, published to GHCR) — mount your data and pass a command:
+
+```sh
+docker run --rm -v "$PWD:/data" ghcr.io/libredb/libredb inspect /data/app.libredb
+```
+
+The image is a CLI shell, not a server: LibreDB stays an embedded, in-process database.
+
 ## How it works: one core, three lenses
 
 <picture>
