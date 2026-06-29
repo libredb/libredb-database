@@ -1,0 +1,21 @@
+# Keep the build context tiny: the image only needs src/ to compile the CLI
+# (bun build --compile bundles src directly). Everything else is excluded.
+node_modules
+dist
+coverage
+.git
+.github
+.attw
+*.tgz
+*.log
+docs
+*.md
+.changeset
+.remember
+.ralph
+loop
+.vscode
+.idea
+libredb
+libredb-*
+*.sha256

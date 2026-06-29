@@ -8,6 +8,8 @@
 **Multi-model without the magic. One core, three lenses, every line tested.**
 
 [![npm version](https://img.shields.io/npm/v/@libredb/libredb.svg)](https://www.npmjs.com/package/@libredb/libredb)
+[![JSR](https://jsr.io/badges/@libredb/libredb)](https://jsr.io/@libredb/libredb)
+[![Docker Hub](https://img.shields.io/docker/v/libredb/libredb?logo=docker&logoColor=white&label=docker%20hub&color=2496ED&sort=semver)](https://hub.docker.com/r/libredb/libredb)
 [![CI](https://github.com/libredb/libredb-database/actions/workflows/ci.yml/badge.svg)](https://github.com/libredb/libredb-database/actions/workflows/ci.yml)
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=libredb_libredb-database&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=libredb_libredb-database)
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=libredb_libredb-database&metric=coverage)](https://sonarcloud.io/summary/new_code?id=libredb_libredb-database)
@@ -83,6 +85,89 @@ db.close();
 Each lens has its own guide: [key-value](./docs/guides/key-value.md) ·
 [document](./docs/guides/document.md) · [relational](./docs/guides/relational.md) ·
 [catalog](./docs/guides/catalog.md).
+
+## Install elsewhere: JSR, CDN, and the browser
+
+LibreDB is the same ESM-only package everywhere; only how you reach it changes.
+
+**JSR** — published to [jsr.io](https://jsr.io/@libredb/libredb) alongside npm:
+
+```sh
+bunx jsr add @libredb/libredb
+# or: npx jsr add @libredb/libredb / deno add jsr:@libredb/libredb
+```
+
+**CDN** — every release is served from the npm registry by the usual CDNs. Pin a version:
+
+```ts
+import { open, kv } from "https://esm.sh/@libredb/libredb@0.1.3";
+```
+
+**Browser** — a dedicated entry that imports nothing from `node:`, so it bundles for the browser
+cleanly. Its `open` carries no default filesystem: an in-memory database works anywhere, and a
+path-backed open takes a filesystem you inject (e.g. the OPFS adapter shown below).
+
+```ts
+import { open, kv } from "@libredb/libredb/browser";
+
+const db = open(); // in-memory
+kv(db).set("greeting", "hello");
+```
+
+For durable storage in the browser, run inside a Web Worker and back the database with an OPFS sync
+access handle (the kernel stays synchronous — no async core):
+
+```ts
+import { open, opfsFileSystem } from "@libredb/libredb/browser";
+
+const root = await navigator.storage.getDirectory();
+const file = await root.getFileHandle("app.libredb", { create: true });
+const handle = await file.createSyncAccessHandle();
+const db = open({ path: "app.libredb", fs: opfsFileSystem(handle) });
+```
+
+A browser-targeting bundler also resolves the browser build from the main `@libredb/libredb` entry
+via the package's `browser` export condition. Note that TypeScript usually still resolves the Node
+types for that entry (where `fs` is optional) unless it is configured for the `browser` condition
+(`customConditions`). To get the browser-specific typing — `fs` required when `path` is given — and
+keep types in step with the runtime, import the explicit `@libredb/libredb/browser` subpath.
+
+## Command-line tool
+
+The package ships a `libredb` bin for inspecting and editing `.libredb` files — no code required:
+
+```sh
+npx libredb inspect data.libredb          # namespaces, kinds, and table schemas
+npx libredb stats data.libredb            # file size and namespace counts
+npx libredb get data.libredb user:1       # print one value
+npx libredb scan data.libredb user:       # print key=value under a prefix
+npx libredb set data.libredb user:1 Ada   # set a key
+npx libredb delete data.libredb user:1    # remove a key
+npx libredb import data.libredb seed.json # bulk-set from a JSON object, atomically
+```
+
+Read commands open the file read-only, so inspection never mutates it. Write commands take an
+advisory `<path>.lock` to refuse a second concurrent writer. Use `--force` only to clear a stale
+lock left by a crashed writer: the lock is advisory and LibreDB is single-process, so two writers
+that force at the same time can still race and corrupt the file.
+
+Prefer a standalone binary with no Node or Bun installed? Each release attaches self-contained
+executables (Linux, macOS, Windows; x64 and arm64) with `.sha256` checksums on its
+[GitHub Release](https://github.com/libredb/libredb-database/releases). Or build one locally with
+`bun run compile`.
+
+Or run the CLI from a container (multi-arch, published to GHCR and Docker Hub) — mount your data and
+pass a command:
+
+```sh
+docker run --rm -v "$PWD:/data" ghcr.io/libredb/libredb inspect /data/app.libredb
+# or from Docker Hub: docker run --rm -v "$PWD:/data" libredb/libredb inspect /data/app.libredb
+```
+
+The same multi-arch image is published to both registries:
+[Docker Hub](https://hub.docker.com/r/libredb/libredb) and
+[GHCR](https://github.com/libredb/libredb-database/pkgs/container/libredb). It is a CLI shell, not a
+server: LibreDB stays an embedded, in-process database.
 
 ## How it works: one core, three lenses
 

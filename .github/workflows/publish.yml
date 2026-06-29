@@ -1,7 +1,20 @@
 name: Publish
 
-# Publishes to npm ONLY when a GitHub Release is published. It never runs on
-# push or pull_request, so creating the tag + release is the single trigger.
+# Publishes to npm, JSR, GitHub Releases, GHCR and Docker Hub ONLY when a GitHub
+# Release is published. It never runs on push or pull_request, so creating the
+# tag + release is the single trigger.
+#
+# JSR (one-time setup by the maintainer before the first JSR release): create the
+# `@libredb` scope on jsr.io, create the `libredb` package, and link this GitHub
+# repository to it. That linkage is what lets the `jsr` job below authenticate via
+# OIDC (`id-token: write`) with no token or secret.
+#
+# Docker Hub (one-time setup): set the repository VARIABLE `DOCKER_HUB_USERNAME`
+# (the Docker Hub namespace, e.g. `libredb`) and the repository SECRET
+# `DOCKER_HUB_TOKEN`. Both are required by the `docker` job; if the username
+# variable is unset the Docker Hub login step fails fast (a clear guard) rather
+# than pushing to a malformed `docker.io//libredb` path. GHCR needs no setup (it
+# uses the built-in `GITHUB_TOKEN`).
 on:
   release:
     types: [published]
@@ -12,6 +25,9 @@ permissions:
 jobs:
   publish:
     name: npm publish
+    # Full releases only: a GitHub pre-release must not publish to the npm/JSR
+    # `latest` channel or Docker `:latest`. Every job carries the same guard.
+    if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -38,10 +54,142 @@ jobs:
       - name: Job summary
         if: success()
         run: |
-          V=$(node -p "require('./package.json').version")
+          V=$(node -p 'require("./package.json").version')
           {
             echo "## Published to npm"
             echo ""
             echo "- Package: \`@libredb/libredb@${V}\`"
             echo "- [View on npm](https://www.npmjs.com/package/@libredb/libredb/v/${V})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  jsr:
+    name: JSR publish
+    # Runs only after npm publish succeeds (npm is the primary registry and has
+    # already run the full gate), so JSR mirrors exactly what npm shipped.
+    needs: publish
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC: token-less JSR publish via the repo-package linkage
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # Use Node + `npx jsr publish` (JSR's canonical invocation) rather than
+      # `bunx jsr`, which can resolve `jsr` to the repo-root jsr.json on some Bun
+      # versions ("Cannot run jsr.json"). JSR publishes from source and runs its
+      # own slow-types check; no build or dependency install is needed.
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
+      - run: npx --yes jsr publish
+      - name: Job summary
+        if: success()
+        run: |
+          V=$(node -p 'require("./package.json").version')
+          {
+            echo "## Published to JSR"
+            echo ""
+            echo "- Package: \`@libredb/libredb@${V}\`"
+            echo "- [View on JSR](https://jsr.io/@libredb/libredb@${V})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  binaries:
+    name: Standalone binaries
+    # A self-contained executable of the CLI attached to the GitHub Release (not
+    # shipped to npm/JSR). Gated behind the publish job so binaries never ship
+    # from a commit that failed the gate. Bun cross-compiles every target from
+    # one Linux runner.
+    needs: publish
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # upload assets to the GitHub Release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: bun-linux-x64
+            out: libredb-linux-x64
+          - target: bun-linux-arm64
+            out: libredb-linux-arm64
+          - target: bun-darwin-x64
+            out: libredb-darwin-x64
+          - target: bun-darwin-arm64
+            out: libredb-darwin-arm64
+          - target: bun-windows-x64
+            out: libredb-windows-x64.exe
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: Compile
+        env:
+          TARGET: ${{ matrix.target }}
+          OUT: ${{ matrix.out }}
+        run: bun build --compile --target="$TARGET" src/cli/main.ts --outfile "$OUT"
+      - name: Checksum
+        env:
+          OUT: ${{ matrix.out }}
+        run: sha256sum "$OUT" > "$OUT.sha256"
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          OUT: ${{ matrix.out }}
+        run: gh release upload "$TAG" "$OUT" "$OUT.sha256" --clobber
+
+  docker:
+    name: Docker image
+    # A portable shell for the CLI (not a server), built multi-arch once and
+    # pushed to both GHCR and Docker Hub. Gated behind the publish job so the
+    # image (and :latest) never ships from a commit that failed the gate.
+    needs: publish
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Resolve version
+        id: meta
+        run: echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to Docker Hub
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          username: ${{ vars.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+      # One buildx build, pushed to both registries via the tag list.
+      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/libredb:${{ steps.meta.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/libredb:latest
+            docker.io/${{ vars.DOCKER_HUB_USERNAME }}/libredb:${{ steps.meta.outputs.version }}
+            docker.io/${{ vars.DOCKER_HUB_USERNAME }}/libredb:latest
+      - name: Job summary
+        if: success()
+        env:
+          OWNER: ${{ github.repository_owner }}
+          DOCKERHUB: ${{ vars.DOCKER_HUB_USERNAME }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          {
+            echo "## Published Docker image"
+            echo ""
+            echo "- \`ghcr.io/${OWNER}/libredb:${VERSION}\` (and \`:latest\`)"
+            echo "- \`docker.io/${DOCKERHUB}/libredb:${VERSION}\` (and \`:latest\`)"
           } >> "$GITHUB_STEP_SUMMARY"

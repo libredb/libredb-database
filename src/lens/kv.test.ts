@@ -15,7 +15,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { open } from "../core.ts";
+// Durable reopen cases use a real path, so open through the Node entry (whose
+// `open` defaults the node:fs adapter); the kernel itself has no default fs.
+import { open } from "../index.ts";
 import { kv, type KvEntry } from "./kv.ts";
 
 /** Temp directories created during the run, cleaned up after each test. */

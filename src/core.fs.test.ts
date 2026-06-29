@@ -101,6 +101,21 @@ test("committed state recovers from the injected filesystem after a reopen", () 
   second.close();
 });
 
+test("opening a path without a filesystem throws a clear error", () => {
+  // The kernel carries no default filesystem: it is runtime-agnostic, so a
+  // path-backed open MUST be given an `fs`. (The node default lives at the
+  // package edge in index.ts, not in the kernel.) A pathless, in-memory open
+  // needs no filesystem and is unaffected.
+  expect(() => open({ path: "should-not-be-created" })).toThrow(/filesystem/i);
+});
+
+test("opening an empty path throws a clear error (before touching any filesystem)", () => {
+  // An empty string is a degenerate path: reject it with a clean libredb error
+  // rather than letting it reach an adapter and surface a raw failure. The check
+  // runs before the filesystem check, so no fs is needed to trigger it.
+  expect(() => open({ path: "" })).toThrow(/non-empty path/i);
+});
+
 test("an in-memory database (no path) never touches the filesystem seam", () => {
   // A trivial filesystem whose open() throws: if the kernel touched it for a
   // pathless database, this would blow up. It must not.

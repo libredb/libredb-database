@@ -18,7 +18,10 @@ import { appendFileSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { open } from "./core.ts";
+// Recovery is exercised on a real disk, so it opens through the Node entry,
+// whose `open` supplies the default node:fs adapter (the kernel itself carries
+// no default filesystem).
+import { open } from "./index.ts";
 
 /** Build a key/value from byte numbers — keeps the tests terse and readable. */
 const bytes = (...b: number[]): Uint8Array => new Uint8Array(b);

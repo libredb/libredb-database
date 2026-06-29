@@ -20,10 +20,8 @@
  * and discards any record a crash left half-written.
  */
 
-import { closeSync, fsyncSync, openSync, readFileSync, statSync, truncateSync, writeSync } from "node:fs";
-
 /** The LibreDB package version. Kept in sync with package.json. */
-export const version = "0.0.4";
+export const version = "0.1.3";
 
 /**
  * A key in the kernel: an immutable sequence of bytes.
@@ -103,9 +101,10 @@ export interface Database {
  * goes through this interface. That keeps the IO boundary explicit and in one
  * place (a readability gain), and it lets a test inject a simulated filesystem
  * to torture crash recovery without a real disk (DESIGN.md section 6.4). The
- * default is a thin real-`node:fs` adapter, so production behaviour is
- * unchanged. The interface is deliberately the SMALLEST set of operations the
- * WAL performs and nothing more.
+ * kernel carries NO default filesystem: a path-backed open must be given one.
+ * The Node entry (index.ts) supplies a `node:fs`-backed adapter by default; the
+ * browser entry supplies none. The interface is deliberately the SMALLEST set
+ * of operations the WAL performs and nothing more.
  */
 export interface FileSystem {
   /** Open the log file at `path` for reading and appending, creating it if it
@@ -144,10 +143,13 @@ export interface WalFile {
 export interface OpenOptions {
   readonly path?: string;
   /**
-   * The filesystem the write-ahead log runs on. Defaults to a thin real
-   * `node:fs` adapter. Injecting one lets tests simulate crashes and IO faults
-   * deterministically (DESIGN.md section 6.4). Ignored when there is no `path`
-   * (an in-memory database never touches a filesystem).
+   * The filesystem the write-ahead log runs on. Optional at the type level, but a
+   * path-backed open needs one at runtime: the kernel and the browser entry throw
+   * when `path` is given without `fs`, while the Node entry (index.ts) supplies a
+   * `node:fs` adapter by default so `open({ path })` works there. Injecting one
+   * lets tests simulate crashes and IO faults deterministically (DESIGN.md section
+   * 6.4). Ignored when there is no `path` (an in-memory database never touches a
+   * filesystem).
    */
   readonly fs?: FileSystem;
 }
@@ -412,45 +414,6 @@ function recover(file: WalFile): StoredEntry[] {
   return entries;
 }
 
-/**
- * The default {@link FileSystem}: a thin adapter over `node:fs`. Each method is
- * the obvious synchronous syscall, so the seam adds an interface, not behaviour.
- * Appends go through one append-mode descriptor (creating the file if missing);
- * reads, size and truncate work by path, matching how the WAL has always
- * reached the disk.
- */
-function nodeFileSystem(): FileSystem {
-  return {
-    open(path) {
-      const fd = openSync(path, "a"); // append-only; creates the file if missing
-      return {
-        size() {
-          return statSync(path).size;
-        },
-        read(offset, length) {
-          // A fresh Uint8Array so the returned slice is an independent copy, not
-          // a view aliasing a shared Buffer pool.
-          return new Uint8Array(readFileSync(path)).subarray(offset, offset + length);
-        },
-        append(bytes) {
-          for (let written = 0; written < bytes.length; ) {
-            written += writeSync(fd, bytes, written);
-          }
-        },
-        fsync() {
-          fsyncSync(fd);
-        },
-        truncate(length) {
-          truncateSync(path, length);
-        },
-        close() {
-          closeSync(fd);
-        },
-      };
-    },
-  };
-}
-
 /** A durable backing store: append committed records, then release the file. */
 interface Log {
   /** Append one transaction's ops and fsync before returning, so a successful
@@ -495,7 +458,20 @@ export const open: Open = (options) => {
   let committed: StoredEntry[];
   let log: Log | null;
   if (options?.path !== undefined) {
-    const opened = openLog(options.path, options.fs ?? nodeFileSystem());
+    // A path must actually name a file: reject the degenerate empty string here
+    // with a clear error, rather than letting it reach the filesystem and
+    // surface a raw, adapter-specific failure (e.g. node's ENOENT for "").
+    if (options.path === "") {
+      throw new Error("libredb: open({ path }) requires a non-empty path");
+    }
+    // The kernel is runtime-agnostic: it carries no default filesystem, so a
+    // path-backed open MUST be given one. The default node:fs adapter lives at
+    // the package edge (index.ts wires it in); the browser entry has none. A
+    // pathless, in-memory open never reaches here and needs no filesystem.
+    if (options.fs === undefined) {
+      throw new Error("libredb: open({ path }) requires a filesystem; none was provided");
+    }
+    const opened = openLog(options.path, options.fs);
     committed = opened.entries;
     log = opened.log;
   } else {

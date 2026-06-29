@@ -8,6 +8,11 @@ dist/
 build/
 *.tsbuildinfo
 
+# Compiled standalone binaries (bun build --compile / `bun run compile`)
+/libredb
+/libredb-*
+*.sha256
+
 # Packaging-check scratch (attw runs against a packed tarball)
 .attw/
 *.tgz
@@ -39,3 +44,4 @@ loop/
 
 .npmrc
 
+.qoder/
