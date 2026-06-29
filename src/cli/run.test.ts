@@ -264,6 +264,12 @@ test("set refuses to write a reserved key", () => {
   expect(r.err.join("\n")).toMatch(/reserved key/i);
 });
 
+test("delete refuses a reserved key so it cannot corrupt the catalog", () => {
+  const r = cli("delete", fixture(), "\u0000libredb:catalog:people");
+  expect(r.code).toBe(2);
+  expect(r.err.join("\n")).toMatch(/reserved key/i);
+});
+
 test("import refuses a reserved key so it cannot corrupt the catalog", () => {
   const path = fixture();
   const file = jsonFile(path, { ok: "1", "\u0000libredb:catalog:people": "evil" });

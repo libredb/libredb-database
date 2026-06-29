@@ -124,8 +124,11 @@ const handle = await file.createSyncAccessHandle();
 const db = open({ path: "app.libredb", fs: opfsFileSystem(handle) });
 ```
 
-A browser-targeting bundler resolves the browser build automatically via the package's `browser`
-export condition, so importing the main `@libredb/libredb` entry works too.
+A browser-targeting bundler also resolves the browser build from the main `@libredb/libredb` entry
+via the package's `browser` export condition. Note that TypeScript usually still resolves the Node
+types for that entry (where `fs` is optional) unless it is configured for the `browser` condition
+(`customConditions`). To get the browser-specific typing — `fs` required when `path` is given — and
+keep types in step with the runtime, import the explicit `@libredb/libredb/browser` subpath.
 
 ## Command-line tool
 

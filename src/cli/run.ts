@@ -162,6 +162,10 @@ function remove({ path, args, io, force }: Ctx): number {
     io.err("missing <key>");
     return 2;
   }
+  if (isReservedKey(key)) {
+    io.err(`refusing to delete a reserved key: ${key}`);
+    return 2;
+  }
   return withWriteDb(path, force, (db) => {
     const { changed } = kv(db).delete(key);
     io.out(`delete ${key} (${changed} removed)`);
