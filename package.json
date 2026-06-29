@@ -1,6 +1,6 @@
 {
   "name": "@libredb/libredb",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A small, readable, embeddable, multi-model database. One ordered key-value core, thin model lenses on top.",
   "keywords": [
     "database",

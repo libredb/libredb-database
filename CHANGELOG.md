@@ -1,0 +1,53 @@
+# @libredb/libredb
+
+## 0.1.3
+
+### Patch Changes
+
+- 78f3547: Add a `libredb` CLI for inspecting and editing `.libredb` files (`npx libredb`).
+
+  Read commands: `inspect` (list each namespace, its kind, and table schemas),
+  `stats` (file size and namespace counts by kind), `get <key>`, and
+  `scan <prefix>`. They open through a read-only filesystem adapter, so inspecting
+  a file never mutates it — even a crash-torn tail is recovered in memory only,
+  leaving the bytes on disk untouched.
+
+  Write commands: `set <key> <value>`, `delete <key>`, and `import <file.json>`
+  (bulk-set from a JSON object in a single atomic commit). Writes take an advisory
+  `<path>.lock` so a second concurrent writer fails loudly instead of corrupting
+  the file; `--force` overrides a stale lock.
+
+  The CLI is built on the public API with zero dependencies (Node/Bun `parseArgs`).
+
+- 8a1bd79: Add a browser entry point (`@libredb/libredb/browser`) and make the kernel
+  runtime-agnostic.
+
+  The `node:fs` dependency moved out of the kernel (`core.ts`) into a dedicated
+  adapter, so importing LibreDB no longer drags `node:fs` into the module graph.
+  The default Node entry (`@libredb/libredb`) is unchanged: `open({ path })` still
+  defaults to the real filesystem and is durable out of the box. The new browser
+  entry exposes the same lens surface with an `open` that has no default
+  filesystem — in-memory databases work anywhere, and a path-backed open accepts
+  an injected filesystem. A bundler targeting the browser now resolves a build
+  free of Node built-ins via the `browser` export condition.
+
+- 1f823de: Add OPFS-backed browser persistence via `opfsFileSystem` (exported from
+  `@libredb/libredb/browser`).
+
+  A browser `FileSystemSyncAccessHandle` exposes synchronous read/write/getSize/
+  truncate/flush/close, which map directly onto the kernel's synchronous filesystem
+  seam — so a LibreDB database can be durable in the browser with no async core.
+  Inside a Web Worker, obtain a sync access handle and pass it to `open`:
+
+  ```ts
+  const root = await navigator.storage.getDirectory();
+  const file = await root.getFileHandle("app.libredb", { create: true });
+  const db = open({
+    path: "app.libredb",
+    fs: opfsFileSystem(await file.createSyncAccessHandle()),
+  });
+  ```
+
+  The adapter takes an already-open handle (acquisition is async and the caller's),
+  keeping `open` synchronous. The new `SyncAccessHandle` type names the handle
+  shape the adapter needs, so the package depends on no DOM lib types.
