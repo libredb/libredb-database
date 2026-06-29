@@ -57,7 +57,14 @@ export function opfsFileSystem(handle: SyncAccessHandle): FileSystem {
           return buffer.subarray(0, read);
         },
         append(data) {
-          handle.write(data, { at: handle.getSize() });
+          // write() may write fewer bytes than asked (hence the returned count),
+          // so loop until the whole record is on the handle — otherwise a short
+          // write would persist a torn record while fsync reports success. This
+          // mirrors the node-fs adapter's writeSync loop.
+          const base = handle.getSize();
+          for (let written = 0; written < data.length; ) {
+            written += handle.write(data.subarray(written), { at: base + written });
+          }
         },
         fsync() {
           handle.flush();

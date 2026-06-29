@@ -77,6 +77,31 @@ test("committed state recovers when a fresh handle reopens the same backing", ()
   second.close();
 });
 
+test("append loops until every byte is written, even on a short write", () => {
+  const backing = makeBacking();
+  const real = fakeHandle(backing);
+  let firstWrite = true;
+  // A handle whose first write lands only one byte, like a real short write.
+  const shortWriter: SyncAccessHandle = {
+    ...real,
+    write(buffer, options) {
+      if (firstWrite && buffer.length > 1) {
+        firstWrite = false;
+        return real.write(buffer.subarray(0, 1), options);
+      }
+      return real.write(buffer, options);
+    },
+  };
+  const db = open({ path: "db", fs: opfsFileSystem(shortWriter) });
+  db.transact((tx) => tx.set(bytes(1), bytes(10)));
+  db.close();
+
+  // Despite the short first write, the whole record landed and recovers intact.
+  const reopened = open({ path: "db", fs: opfsFileSystem(fakeHandle(backing)) });
+  expect(reopened.transact((tx) => tx.get(bytes(1)))).toEqual(bytes(10));
+  reopened.close();
+});
+
 test("recovery truncates a torn tail through the handle", () => {
   const backing = makeBacking();
   const first = open({ path: "db", fs: opfsFileSystem(fakeHandle(backing)) });

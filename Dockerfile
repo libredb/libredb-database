@@ -12,9 +12,12 @@
 
 # Stage 1: compile the CLI for the build platform (buildx sets it per --platform,
 # so the same Dockerfile cross-builds amd64 and arm64).
-FROM oven/bun:1 AS build
+# Pinned to match .bun-version (the binaries job pins the same via setup-bun), so
+# the Docker CLI and the GitHub-Release binaries embed the same Bun runtime.
+FROM oven/bun:1.3.14 AS build
 WORKDIR /src
-COPY package.json tsconfig.json tsconfig.build.json ./
+# bun build --compile bundles only the source it reaches; the CLI imports nothing
+# outside src/, so no package.json/tsconfig and no `bun install` are needed.
 COPY src ./src
 RUN bun build --compile src/cli/main.ts --outfile /libredb
 

@@ -120,14 +120,19 @@ core gets smaller and purer, not more complex.
 - **Effort:** high. **Risk:** medium-high. **Value:** high.
 - New `src/cli/` entry, a thin wrapper over the public API. Zero dependencies via
   `node:util` `parseArgs`. `package.json` `bin: { "libredb": "./dist/cli/main.js" }`.
-- Commands:
-  - Read: `inspect` (catalog summary grouped by kind), `get <key>`, `scan <prefix>`,
-    `stats` (record count, file size, per-namespace breakdown), `repl` (read).
+- Commands (as shipped):
+  - Read: `inspect` (catalog summary grouped by kind), `stats` (file size +
+    namespace count + counts by kind), `get <key>`, `scan <prefix>`.
   - Write: `set`, `delete`, `import`.
+  - `repl` was deferred (the issue marked it optional; it is interactive and adds
+    disproportionate test surface).
 - **Data-safety design (DBA-critical):**
   - LibreDB is single-process with no file locking. Two concurrent writers corrupt
-    the file. Write commands acquire an advisory lock (`.libredb.lock`); if held,
-    they refuse unless `--force`.
+    the file. Write commands acquire an advisory lock (`<path>.lock`, carrying a
+    sentinel so `--force` refuses to delete a non-lock file); if held, they refuse
+    unless `--force`.
+  - Writes reject reserved keys (`isReservedKey`) so the CLI cannot overwrite the
+    catalog/lens keyspace.
   - `open()` truncates a torn tail during recovery, so even a read-intent command
     can mutate the file. Read commands therefore use a read-only `FileSystem`
     adapter that opens `O_RDONLY` and turns `truncate` into a no-op plus a warning.

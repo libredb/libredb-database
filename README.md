@@ -103,7 +103,7 @@ import { open, kv } from "https://esm.sh/@libredb/libredb@0.0.4";
 
 **Browser** — a dedicated entry that imports nothing from `node:`, so it bundles for the browser
 cleanly. Its `open` carries no default filesystem: an in-memory database works anywhere, and a
-path-backed open takes a filesystem you inject (e.g. a future OPFS adapter).
+path-backed open takes a filesystem you inject (e.g. the OPFS adapter shown below).
 
 ```ts
 import { open, kv } from "@libredb/libredb/browser";

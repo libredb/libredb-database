@@ -5,9 +5,9 @@
  * Same lens surface as the default Node entry ({@link import("./index.ts")}),
  * with one difference: `open` is the kernel's own, carrying NO default
  * filesystem. An in-memory database (`open()`) works anywhere; a path-backed
- * open requires an injected `fs` (e.g. a future OPFS adapter). The point of this
- * entry is the import graph: it reaches nothing in `node:`, so a bundler can
- * ship it to a browser. The node:fs adapter lives behind the Node entry only.
+ * open requires an injected `fs` (e.g. the bundled {@link opfsFileSystem}). The
+ * point of this entry is the import graph: it reaches nothing in `node:`, so a
+ * bundler can ship it to a browser. The node:fs adapter lives behind Node only.
  */
 export { open, version } from "./core.ts";
 export type { Database, FileSystem, OpenOptions, WalFile } from "./core.ts";

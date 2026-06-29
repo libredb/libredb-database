@@ -17,6 +17,9 @@ permissions:
 jobs:
   publish:
     name: npm publish
+    # Full releases only: a GitHub pre-release must not publish to the npm/JSR
+    # `latest` channel or Docker `:latest`. Every job carries the same guard.
+    if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -56,6 +59,7 @@ jobs:
     # Runs only after npm publish succeeds (npm is the primary registry and has
     # already run the full gate), so JSR mirrors exactly what npm shipped.
     needs: publish
+    if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -81,9 +85,12 @@ jobs:
 
   binaries:
     name: Standalone binaries
-    # Independent of the registry publishes: a self-contained executable of the
-    # CLI, attached to the GitHub Release (not shipped to npm/JSR). Bun cross-
-    # compiles every target from one Linux runner.
+    # A self-contained executable of the CLI attached to the GitHub Release (not
+    # shipped to npm/JSR). Gated behind the publish job so binaries never ship
+    # from a commit that failed the gate. Bun cross-compiles every target from
+    # one Linux runner.
+    needs: publish
+    if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     permissions:
       contents: write # upload assets to the GitHub Release
@@ -126,8 +133,10 @@ jobs:
   docker:
     name: Docker image
     # A portable shell for the CLI (not a server), built multi-arch and pushed to
-    # GHCR. The Dockerfile compiles the CLI from source, so this needs no registry
-    # publish to have happened first.
+    # GHCR. Gated behind the publish job so the image (and :latest) never ships
+    # from a commit that failed the gate.
+    needs: publish
+    if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
