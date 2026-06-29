@@ -27,8 +27,11 @@ export function acquireLock(path: string, force: boolean): Lock {
   if (force) dropOwnLock(lockPath);
   try {
     const fd = openSync(lockPath, "wx"); // "wx": exclusive create, fails if it exists
-    writeSync(fd, SENTINEL);
-    closeSync(fd);
+    try {
+      writeSync(fd, SENTINEL);
+    } finally {
+      closeSync(fd); // always release the descriptor, even if the write throws
+    }
   } catch (error) {
     // Only an existing lock file (EEXIST) means "locked". Surface any other IO
     // error (missing directory, permissions, ...) unchanged, so a real problem

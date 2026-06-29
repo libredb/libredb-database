@@ -175,7 +175,16 @@ function importKeys({ path, args, io, force }: Ctx): number {
     io.err("missing <file>");
     return 2;
   }
-  const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
+  const raw = readFileSync(file, "utf8");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Malformed JSON is bad input, not a runtime fault — report it like the other
+    // usage errors (exit 2) instead of letting it fall through to exit 1.
+    io.err("import expects a file containing a JSON object of string values");
+    return 2;
+  }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     io.err("import expects a JSON object of string values");
     return 2;
@@ -203,16 +212,17 @@ function importKeys({ path, args, io, force }: Ctx): number {
   });
 }
 
-/** The commands, keyed by name. Each takes the parsed {@link Ctx}. */
-const commands: Record<string, (ctx: Ctx) => number> = {
-  inspect,
-  stats,
-  get,
-  scan,
-  set,
-  delete: remove,
-  import: importKeys,
-};
+/** The commands, keyed by name. A Map (not a plain object) so an inherited
+ * property name like "toString" or "__proto__" can never resolve to a handler. */
+const commands = new Map<string, (ctx: Ctx) => number>([
+  ["inspect", inspect],
+  ["stats", stats],
+  ["get", get],
+  ["scan", scan],
+  ["set", set],
+  ["delete", remove],
+  ["import", importKeys],
+]);
 
 export function run(argv: string[], io: Io): number {
   let positionals: string[];
@@ -236,7 +246,7 @@ export function run(argv: string[], io: Io): number {
   }
 
   const command = positionals[0] as string;
-  const handler = commands[command];
+  const handler = commands.get(command);
   if (handler === undefined) {
     io.err(`unknown command: ${command}`);
     return 2;

@@ -73,6 +73,16 @@ test("an unknown command is a usage error", () => {
   expect(r.err.join("\n")).toMatch(/unknown command/i);
 });
 
+test("an inherited object property is not a command (no prototype pollution)", () => {
+  // "toString"/"__proto__" resolve to Object.prototype on a plain object; the
+  // dispatch Map must reject them like any other unknown command.
+  for (const name of ["toString", "constructor", "__proto__"]) {
+    const r = cli(name, "x");
+    expect(r.code).toBe(2);
+    expect(r.err.join("\n")).toMatch(/unknown command/i);
+  }
+});
+
 test("a command with no path is a usage error", () => {
   const r = cli("inspect");
   expect(r.code).toBe(2);
@@ -221,6 +231,15 @@ test("import with no file is a usage error", () => {
   const r = cli("import", fixture());
   expect(r.code).toBe(2);
   expect(r.err.join("\n")).toMatch(/file/i);
+});
+
+test("import rejects malformed JSON as a usage error (exit 2)", () => {
+  const path = fixture();
+  const file = `${path}.bad.json`;
+  writeFileSync(file, "{ not valid json");
+  const r = cli("import", path, file);
+  expect(r.code).toBe(2);
+  expect(r.err.join("\n")).toMatch(/json/i);
 });
 
 test("a write refuses when the database is locked", () => {
