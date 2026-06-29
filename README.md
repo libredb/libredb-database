@@ -98,7 +98,7 @@ bunx jsr add @libredb/libredb
 **CDN** — every release is served from the npm registry by the usual CDNs. Pin a version:
 
 ```ts
-import { open, kv } from "https://esm.sh/@libredb/libredb@0.1.1";
+import { open, kv } from "https://esm.sh/@libredb/libredb@0.1.2";
 ```
 
 **Browser** — a dedicated entry that imports nothing from `node:`, so it bundles for the browser

@@ -157,7 +157,7 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          username: ${{ vars.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
       # One buildx build, pushed to both registries via the tag list.
       - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
@@ -168,13 +168,13 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/libredb:${{ steps.meta.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/libredb:latest
-            docker.io/${{ secrets.DOCKER_HUB_USERNAME }}/libredb:${{ steps.meta.outputs.version }}
-            docker.io/${{ secrets.DOCKER_HUB_USERNAME }}/libredb:latest
+            docker.io/${{ vars.DOCKER_HUB_USERNAME }}/libredb:${{ steps.meta.outputs.version }}
+            docker.io/${{ vars.DOCKER_HUB_USERNAME }}/libredb:latest
       - name: Job summary
         if: success()
         env:
           OWNER: ${{ github.repository_owner }}
-          DOCKERHUB: ${{ secrets.DOCKER_HUB_USERNAME }}
+          DOCKERHUB: ${{ vars.DOCKER_HUB_USERNAME }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
           {
