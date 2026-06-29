@@ -12,6 +12,11 @@
 export { open, version } from "./core.ts";
 export type { Database, FileSystem, OpenOptions, WalFile } from "./core.ts";
 
+// OPFS persistence (browser-only): wrap an OPFS sync access handle as the
+// filesystem for a path-backed open. See adapter/opfs.ts for usage in a Worker.
+export { opfsFileSystem } from "./adapter/opfs.ts";
+export type { SyncAccessHandle } from "./adapter/opfs.ts";
+
 export { kv } from "./lens/kv.ts";
 export type { Kv, KvEntry } from "./lens/kv.ts";
 

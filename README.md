@@ -108,8 +108,20 @@ path-backed open takes a filesystem you inject (e.g. a future OPFS adapter).
 ```ts
 import { open, kv } from "@libredb/libredb/browser";
 
-const db = open(); // in-memory; durable persistence is a roadmap item
+const db = open(); // in-memory
 kv(db).set("greeting", "hello");
+```
+
+For durable storage in the browser, run inside a Web Worker and back the database with an OPFS sync
+access handle (the kernel stays synchronous — no async core):
+
+```ts
+import { open, opfsFileSystem } from "@libredb/libredb/browser";
+
+const root = await navigator.storage.getDirectory();
+const file = await root.getFileHandle("app.libredb", { create: true });
+const handle = await file.createSyncAccessHandle();
+const db = open({ path: "app.libredb", fs: opfsFileSystem(handle) });
 ```
 
 A browser-targeting bundler resolves the browser build automatically via the package's `browser`
