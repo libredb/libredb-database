@@ -4,5 +4,10 @@
     "path": "dist/index.js",
     "ignore": ["node:fs", "node:os", "node:path"],
     "limit": "4 kB"
+  },
+  {
+    "name": "browser entry (min+brotli)",
+    "path": "dist/browser.js",
+    "limit": "4 kB"
   }
 ]

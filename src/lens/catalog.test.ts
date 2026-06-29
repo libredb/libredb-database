@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { open } from "../core.ts";
+// Persistence cases use a real path, so open through the Node entry (which
+// defaults the node:fs adapter); the kernel carries no default filesystem.
+import { open } from "../index.ts";
 import { CATALOG_PREFIX, RESERVED_MARKER, assertUserName, catalog, isReservedKey } from "./catalog.ts";
 import * as publicSurface from "../index.ts";
 import { doc } from "./document.ts";

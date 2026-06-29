@@ -15,7 +15,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { open } from "./core.ts";
+// The path-backed durability case opens through the Node entry for the default
+// node:fs adapter; the in-memory cases work the same through it.
+import { open } from "./index.ts";
 
 /** Build a key/value from byte numbers — keeps the tests terse and readable. */
 const bytes = (...b: number[]): Uint8Array => new Uint8Array(b);

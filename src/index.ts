@@ -10,8 +10,24 @@
  * {@link isReservedKey} (with {@link RESERVED_MARKER} / {@link CATALOG_PREFIX})
  * lets a raw-KV tool hide engine-internal keys instead of hardcoding the layout.
  */
-export { version, open } from "./core.ts";
-export type { Database, OpenOptions } from "./core.ts";
+import { open as openKernel, type Open } from "./core.ts";
+import { nodeFileSystem } from "./adapter/node-fs.ts";
+
+export { version } from "./core.ts";
+export type { Database, FileSystem, OpenOptions, WalFile } from "./core.ts";
+
+/**
+ * Open a LibreDB database on Node or Bun. Identical to the kernel's
+ * {@link import("./core.ts").open}, except a path-backed open with no `fs`
+ * defaults to the real `node:fs` adapter — so `open({ path })` is durable out of
+ * the box. A pathless open stays in-memory; an explicit `fs` is passed through.
+ * The browser entry (`@libredb/libredb/browser`) omits this default so it never
+ * imports `node:fs`.
+ */
+export const open: Open = (options) =>
+  options?.path !== undefined && options.fs === undefined
+    ? openKernel({ ...options, fs: nodeFileSystem() })
+    : openKernel(options);
 
 export { kv } from "./lens/kv.ts";
 export type { Kv, KvEntry } from "./lens/kv.ts";
