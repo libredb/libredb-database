@@ -8,6 +8,8 @@
 **Multi-model without the magic. One core, three lenses, every line tested.**
 
 [![npm version](https://img.shields.io/npm/v/@libredb/libredb.svg)](https://www.npmjs.com/package/@libredb/libredb)
+[![JSR](https://jsr.io/badges/@libredb/libredb)](https://jsr.io/@libredb/libredb)
+[![Docker Hub](https://img.shields.io/docker/v/libredb/libredb?logo=docker&logoColor=white&label=docker%20hub&color=2496ED&sort=semver)](https://hub.docker.com/r/libredb/libredb)
 [![CI](https://github.com/libredb/libredb-database/actions/workflows/ci.yml/badge.svg)](https://github.com/libredb/libredb-database/actions/workflows/ci.yml)
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=libredb_libredb-database&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=libredb_libredb-database)
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=libredb_libredb-database&metric=coverage)](https://sonarcloud.io/summary/new_code?id=libredb_libredb-database)
@@ -162,7 +164,10 @@ docker run --rm -v "$PWD:/data" ghcr.io/libredb/libredb inspect /data/app.libred
 # or from Docker Hub: docker run --rm -v "$PWD:/data" libredb/libredb inspect /data/app.libredb
 ```
 
-The image is a CLI shell, not a server: LibreDB stays an embedded, in-process database.
+The same multi-arch image is published to both registries:
+[Docker Hub](https://hub.docker.com/r/libredb/libredb) and
+[GHCR](https://github.com/libredb/libredb-database/pkgs/container/libredb). It is a CLI shell, not a
+server: LibreDB stays an embedded, in-process database.
 
 ## How it works: one core, three lenses
 
