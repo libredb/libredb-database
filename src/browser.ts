@@ -14,7 +14,12 @@
 import { open as openKernel, type Database, type FileSystem } from "./core.ts";
 
 export { version } from "./core.ts";
-export type { Database, FileSystem, OpenOptions, WalFile } from "./core.ts";
+// OpenOptions (the kernel's permissive type, fs optional) is intentionally NOT
+// re-exported here: the browser `open` is typed with BrowserOpenOptions, where fs
+// is required alongside a path, so exposing OpenOptions would advertise a
+// contract this entry does not honor. FileSystem/WalFile stay — a browser
+// consumer needs them to implement a custom fs (e.g. the OPFS adapter).
+export type { Database, FileSystem, WalFile } from "./core.ts";
 
 /**
  * Options for the browser {@link open}. Unlike the kernel's permissive
