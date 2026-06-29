@@ -21,7 +21,7 @@
  */
 
 /** The LibreDB package version. Kept in sync with package.json. */
-export const version = "0.1.0";
+export const version = "0.1.1";
 
 /**
  * A key in the kernel: an immutable sequence of bytes.
