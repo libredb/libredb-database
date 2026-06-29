@@ -61,6 +61,7 @@
     "lint": "oxlint && eslint .",
     "test": "bun test --coverage",
     "build": "tsc --project tsconfig.build.json",
+    "compile": "bun build --compile src/cli/main.ts --outfile libredb",
     "size": "size-limit",
     "attw": "rm -rf .attw && bun pm pack --quiet --destination .attw && attw .attw/*.tgz --profile esm-only",
     "publint": "publint",

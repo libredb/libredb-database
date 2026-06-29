@@ -78,3 +78,47 @@ jobs:
             echo "- Package: \`@libredb/libredb@${V}\`"
             echo "- [View on JSR](https://jsr.io/@libredb/libredb@${V})"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  binaries:
+    name: Standalone binaries
+    # Independent of the registry publishes: a self-contained executable of the
+    # CLI, attached to the GitHub Release (not shipped to npm/JSR). Bun cross-
+    # compiles every target from one Linux runner.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # upload assets to the GitHub Release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: bun-linux-x64
+            out: libredb-linux-x64
+          - target: bun-linux-arm64
+            out: libredb-linux-arm64
+          - target: bun-darwin-x64
+            out: libredb-darwin-x64
+          - target: bun-darwin-arm64
+            out: libredb-darwin-arm64
+          - target: bun-windows-x64
+            out: libredb-windows-x64.exe
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: Compile
+        env:
+          TARGET: ${{ matrix.target }}
+          OUT: ${{ matrix.out }}
+        run: bun build --compile --target="$TARGET" src/cli/main.ts --outfile "$OUT"
+      - name: Checksum
+        env:
+          OUT: ${{ matrix.out }}
+        run: sha256sum "$OUT" > "$OUT.sha256"
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          OUT: ${{ matrix.out }}
+        run: gh release upload "$TAG" "$OUT" "$OUT.sha256" --clobber

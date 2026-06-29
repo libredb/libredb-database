@@ -132,6 +132,11 @@ npx libredb import data.libredb seed.json # bulk-set from a JSON object, atomica
 Read commands open the file read-only, so inspection never mutates it. Write commands take an
 advisory `<path>.lock` to refuse a second concurrent writer; pass `--force` to override a stale lock.
 
+Prefer a standalone binary with no Node or Bun installed? Each release attaches self-contained
+executables (Linux, macOS, Windows; x64 and arm64) with `.sha256` checksums on its
+[GitHub Release](https://github.com/libredb/libredb-database/releases). Or build one locally with
+`bun run compile`.
+
 ## How it works: one core, three lenses
 
 <picture>
