@@ -132,6 +132,10 @@ types for that entry (where `fs` is optional) unless it is configured for the `b
 (`customConditions`). To get the browser-specific typing — `fs` required when `path` is given — and
 keep types in step with the runtime, import the explicit `@libredb/libredb/browser` subpath.
 
+**Using LibreDB in a web app with no backend?** The full guide —
+in-memory vs durable (OPFS) storage, the Web Worker pattern, and React / Vite /
+Next.js / Astro setup — is in [`docs/BROWSER.md`](./docs/BROWSER.md).
+
 ## Command-line tool
 
 The package ships a `libredb` bin for inspecting and editing `.libredb` files — no code required:
@@ -168,6 +172,9 @@ The same multi-arch image is published to both registries:
 [Docker Hub](https://hub.docker.com/r/libredb/libredb) and
 [GHCR](https://github.com/libredb/libredb-database/pkgs/container/libredb). It is a CLI shell, not a
 server: LibreDB stays an embedded, in-process database.
+
+Full references: the [CLI](./docs/CLI.md) (every command, safety model, exit codes), the
+[standalone binaries](./docs/BINARY.md) (download + verify), and the [Docker image](./docs/DOCKER.md).
 
 ## How it works: one core, three lenses
 
@@ -273,6 +280,10 @@ The full durability and DST walkthrough is in [`docs/RELIABILITY.md`](./docs/REL
 | Topic | Where |
 |-------|-------|
 | Lens guides (kv, document, relational, catalog) | [`docs/guides/`](./docs/guides/) |
+| Browser — embed in a web app with no backend (in-memory + OPFS) | [`docs/BROWSER.md`](./docs/BROWSER.md) |
+| CLI — inspect and edit `.libredb` files (`npx libredb`) | [`docs/CLI.md`](./docs/CLI.md) |
+| Standalone binaries — download and run, no Node/Bun | [`docs/BINARY.md`](./docs/BINARY.md) |
+| Docker — run the CLI from a container | [`docs/DOCKER.md`](./docs/DOCKER.md) |
 | Architecture — the guided tour under the hood | [`ARCHITECTURE.md`](./ARCHITECTURE.md) |
 | Design — the locked engineering decisions | [`docs/DESIGN.md`](./docs/DESIGN.md) |
 | Reliability — durability and crash recovery | [`docs/RELIABILITY.md`](./docs/RELIABILITY.md) |
