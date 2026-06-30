@@ -18,6 +18,7 @@
 [![dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](./package.json)
 [![bundle size](https://img.shields.io/bundlephobia/minzip/@libredb/libredb)](https://bundlephobia.com/package/@libredb/libredb)
 [![status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](#project-status--roadmap)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/libredb/libredb-database)
 
 LibreDB is a small, readable, embeddable, multi-model database written in TypeScript. It is built on
 one idea: a database can be powerful and still be understood by opening its source. A single ordered
