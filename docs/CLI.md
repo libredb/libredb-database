@@ -41,7 +41,8 @@ Usage:
   libredb import <path> <file.json>  Bulk-set keys from a JSON object (one atomic commit)
 
 Options:
-  --force                            Override an existing write lock
+  --force                            Remove a write lock whose holder is no longer alive
+  --raw                              Print values verbatim (default escapes control characters)
 ```
 
 ---
@@ -141,15 +142,46 @@ The CLI touches real database files, so it is deliberately careful:
   (`inspect`/`stats`/`get`/`scan`) open through a **read-only filesystem adapter**:
   recovery drops a torn tail *in memory only*; the bytes on disk are left exactly
   as found.
-- **Writes take an advisory lock.** LibreDB is single-process with no internal
-  file locking, so two concurrent writers would corrupt a file. `set`/`delete`/
-  `import` create a `<path>.lock` first; if one is already held the command fails
-  loudly. Pass `--force` only to clear a **stale** lock left by a crashed writer
-  — it will not delete a file that isn't a libredb lock.
+- **A wrong path cannot destroy a file.** Opening a file that is not a LibreDB
+  database (a typo, a text file) fails with a clear error and leaves the file
+  byte-for-byte untouched — the on-disk `LRDB` header is checked before anything
+  is written.
+- **Writes hold the exclusive open lock.** The library itself locks the database
+  on open (`<path>.lock`, recording the holder's pid and host), so a second
+  writer — this CLI against a live app, or two CLI invocations — fails loudly
+  instead of silently corrupting the file. A lock whose holder is verifiably dead
+  is reclaimed automatically; `--force` additionally removes a lock that cannot
+  be verified (for example one from another machine), but refuses a verifiably
+  live holder and refuses to delete a file that is not a libredb lock.
+- **Output is escaped by default.** `get`/`scan` print stored values with control
+  characters escaped (`\x1b`, `\x07`, ...), so a value containing terminal escape
+  sequences cannot clear your screen, retitle your terminal, or write your
+  clipboard when you inspect an untrusted file. Pass `--raw` for the exact bytes.
 - **Reserved keys are refused.** Writes reject keys in LibreDB's reserved
   namespace (the `\x00`-prefixed catalog space), so the CLI cannot corrupt the
   catalog or another lens's layout.
 - **Bulk imports are atomic.** `import` commits all keys in one transaction.
+
+---
+
+## Backup and restore
+
+The WAL **is** the database: one `.libredb` file holds everything, so backup is a
+file copy — with one rule.
+
+- **Backup:** copy the file while **no writer has it open** (no `<path>.lock`
+  present, or only your own closed session). A copy taken mid-write can split a
+  record in half; the copy would then open only up to the split.
+
+  ```sh
+  cp app.libredb backup/app-$(date -u +%Y%m%d).libredb
+  ```
+
+- **Restore:** copy the file back and open it — recovery replays it like any
+  reopen. Nothing else to do.
+- **Export as text:** `libredb scan <path> ""` is not supported (an empty prefix
+  is refused); scan per namespace prefix, or use the programmatic lenses for a
+  structured export. A first-class `export` command is on the roadmap.
 
 ---
 

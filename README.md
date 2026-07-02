@@ -247,10 +247,11 @@ the store only through one narrow `transact` port. For the full tour, read
 
 **Do not use it (yet) when you need:**
 
-- A hardened production datastore at scale — it is **pre-alpha**; today's beachhead is test/dev.
+- A hardened production datastore at scale — it is an **early beta**; today's beachhead is test/dev.
 - Secondary indexes or a query planner — queries are O(n) scans by design in v1 (on the roadmap).
-- Concurrent multi-process access, replication, or a networked client/server — it is embedded and
-  in-process.
+- Concurrent multi-process access, replication, or a networked client/server — it is embedded,
+  in-process, and strictly single-writer (a second `open()` on the same file is refused by an
+  exclusive lock rather than silently corrupting it).
 - SQL wire compatibility or an existing-driver ecosystem.
 
 These limits are deliberate v1 scope, not hidden gaps — LibreDB's strength comes from what it refuses.
@@ -264,17 +265,36 @@ See the [Manifesto](./MANIFESTO.md).
 </picture>
 
 A transaction that returns has been written to a length-framed, CRC-32-checksummed write-ahead log and
-`fsync`'d *before* the commit becomes visible — so a committed write survives a crash, and a crash can
-only ever damage the last, un-fsync'd record (which recovery detects and truncates). This is not just
-asserted: the kernel's crash/recovery path is proven by **deterministic simulation testing**, running
-the real engine against a seeded in-memory filesystem that tears, corrupts, and crashes the log on
-command, then checking that recovery is always a valid committed prefix.
+`fsync`'d *before* the commit becomes visible — so on a healthy disk a committed write survives a
+crash, and a crash can only ever damage the last, un-fsync'd record (which recovery detects,
+truncates, and reports). The failure modes *outside* the clean-crash model are handled explicitly, not
+assumed away: a failed append/fsync latches the database instead of writing past a torn record, a
+second writer is refused by an exclusive open lock, a file that is not a LibreDB database is refused
+untouched (the `LRDB` header), mid-log corruption refuses to open rather than silently truncating, and
+a short read is an IO error, never data loss. This is not just asserted: the crash/recovery path is
+proven by **deterministic simulation testing** — the real engine against a seeded in-memory filesystem
+that tears, corrupts, errors, and crashes the log on command — plus a binary round-trip fuzz.
 
 ```sh
-bun run test    # includes a bounded 50-seed DST run
+bun run test    # includes a bounded 50-seed DST run and the fault-injection suites
 ```
 
-The full durability and DST walkthrough is in [`docs/RELIABILITY.md`](./docs/RELIABILITY.md).
+The precise durability contract and the DST walkthrough are in
+[`docs/RELIABILITY.md`](./docs/RELIABILITY.md).
+
+## Performance envelope
+
+Honesty about scale (comprehension is the budget in v1, not throughput):
+
+- **The whole store lives in memory** as one sorted array; the file on disk is the append-only log
+  that rebuilds it on open. The practical ceiling is data that comfortably fits in RAM — the test/dev
+  beachhead, not a server working set.
+- **Each `transact()` copies the store** before applying writes, so a per-row auto-commit loop is
+  quadratic in store size and will look hung on large seeds. **Wrap bulk loads in one `transact()`**
+  (or use `libredb import`, which already does): one copy, one fsync, one record for the whole batch.
+- **No secondary indexes**: a `find`/`where` is an O(n) scan by design in v1.
+- **The log grows without bound** until compaction lands (tracked in
+  [#12](https://github.com/libredb/libredb/issues/12)); reopening replays the whole log.
 
 ## Documentation
 
@@ -293,14 +313,18 @@ The full durability and DST walkthrough is in [`docs/RELIABILITY.md`](./docs/REL
 
 ## Project status & roadmap
 
-LibreDB is **pre-alpha** (`0.0.x`). The architecture is in place and every line of the core is tested,
-but the API may still change and it is not yet meant for production data.
+LibreDB is an **early beta** (`0.1.x`). The architecture is in place, every line of the core is
+tested, and the durability contract above is enforced — but the API may still change before 1.0, and
+the recommended home is still test/dev data.
 
-- **Done:** the ordered key-value kernel (transactions, WAL, crash recovery); the key-value, document,
-  and relational lenses; the self-describing catalog; the deterministic simulation testing harness;
-  100% line/function/statement coverage on the core.
+- **Done:** the ordered key-value kernel (transactions, WAL with a versioned on-disk header, crash
+  recovery that refuses corruption and foreign files, an IO-failure latch, an exclusive open lock);
+  the key-value, document, and relational lenses; the self-describing catalog; typed `LibreDbError`
+  codes; the DST harness with IO-fault injection and binary fuzz; 100% line/function/statement
+  coverage.
 - **Next:** secondary indexes and a richer query surface; more query operators; additional lenses;
-  production-hardening milestones (directory fsync on first create, WAL compaction/checkpointing).
+  WAL compaction/checkpointing ([#12](https://github.com/libredb/libredb/issues/12)); real-browser
+  OPFS verification ([#10](https://github.com/libredb/libredb/issues/10)).
 
 ## The LibreDB family
 

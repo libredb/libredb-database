@@ -60,5 +60,26 @@ jobs:
             echo "| License tripwire (runtime deps) | ${{ steps.license.outcome }} |"
             echo ""
             echo "- Coverage: 100% line/function/statement (enforced by bunfig.toml)"
-            echo "- Bundle: ${KB} kB (min+brotli) / 4 kB budget"
+            echo "- Bundle: ${KB} kB (min+brotli) / 5 kB budget"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  node-smoke:
+    name: node 22 smoke
+    # package.json declares engines.node >= 22 and the docs advertise `npx
+    # libredb` and Node embedding, but the gate runs on Bun. This job keeps the
+    # Node half of the declared runtime surface off the honor system: build the
+    # real dist/, then open, write, lock, reopen, and read a file-backed
+    # database under Node, plus one pass of the CLI entry.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - name: Smoke-test the built package under Node
+        run: node scripts/node-smoke.mjs

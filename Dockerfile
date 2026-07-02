@@ -24,10 +24,12 @@ COPY src ./src
 RUN bun build --compile src/cli/main.ts --outfile /libredb
 
 # Stage 2: a minimal runtime carrying only the binary and the glibc/libstdc++ a
-# bun-compiled executable links against. distroless/cc has exactly that. Pinned
-# by digest because `cc-debian12` is a rolling tag (no version), so the digest is
-# what makes the runtime reproducible; refresh it periodically for base updates.
-FROM gcr.io/distroless/cc-debian12@sha256:d703b626ba455c4e6c6fbe5f36e6f427c85d51445598d564652a2f334179f96e
+# bun-compiled executable links against. distroless/cc has exactly that. The
+# :nonroot variant runs as uid 65532 so files the CLI creates in a bind-mounted
+# host directory are not root-owned (and a container escape holds no root).
+# Mount data writable by that uid, or pass `--user "$(id -u):$(id -g)"`. Pinned
+# by digest because the tag is rolling; refresh it periodically for base updates.
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:b0ae8e989418b458e0f25489bc3be523718938a2b70864cc0f6a00af1ddbd985
 COPY --from=build /libredb /usr/local/bin/libredb
 WORKDIR /data
 ENTRYPOINT ["/usr/local/bin/libredb"]

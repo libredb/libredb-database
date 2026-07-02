@@ -77,6 +77,11 @@ export function opfsFileSystem(handle: SyncAccessHandle): FileSystem {
           }
         },
         fsync() {
+          // The strongest durability point OPFS offers. Note the honest gap:
+          // the spec does not promise flush() carries POSIX-fsync strength
+          // against power loss — a committed write survives a tab crash or
+          // browser restart, but a power cut is engine-dependent (see
+          // docs/BROWSER.md and issue #10).
           handle.flush();
         },
         truncate(length) {
