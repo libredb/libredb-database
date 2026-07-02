@@ -145,8 +145,10 @@ export interface Database {
    *
    * `run` MUST be synchronous. An async callback returns a pending Promise —
    * the kernel cannot see writes made after an `await`, so committing at that
-   * point would silently lose them. Any thenable return value therefore
-   * aborts the transaction with {@link ErrorCode} ASYNC_TRANSACTION.
+   * point would silently lose them. The signature rejects a Promise-returning
+   * callback at compile time (the `T extends PromiseLike ? never : ...`
+   * intersection), and any thenable that slips past the types aborts the
+   * transaction at runtime with {@link ErrorCode} ASYNC_TRANSACTION.
    *
    * If a commit fails to reach the disk (the append or fsync throws), the
    * database LATCHES into a failed state: every later transact() throws with
@@ -155,7 +157,7 @@ export interface Database {
    * acknowledged commits — refusing further writes is what keeps "a returned
    * transact() is durable" true.
    */
-  transact<T>(run: (tx: Transaction) => T): T;
+  transact<T>(run: (tx: Transaction) => T & (T extends PromiseLike<unknown> ? never : unknown)): T;
   /** Flush pending state and release resources. Safe to call once. Throws if
    * called from inside a transaction body. */
   close(): void;
@@ -373,20 +375,25 @@ function makeTransaction(working: StoredEntry[], journal: Op[]): Transaction {
       journal.push({ kind: "delete", key: ownedKey });
     },
     *getRange(start, end) {
-      // Snapshot the matching entries when iteration starts (a generator body
-      // runs at the first next()). Walking the live array by index instead
-      // would let a delete-during-scan shift entries under the cursor and
-      // silently skip them — the classic delete-while-scanning bug.
+      // Snapshot REFERENCES to the matching entries when iteration starts (a
+      // generator body runs at the first next()). Walking the live array by
+      // index instead would let a delete-during-scan shift entries under the
+      // cursor and silently skip them — the classic delete-while-scanning bug.
+      // Entries are immutable once stored, so holding references is safe; the
+      // byte copies happen per-yield, so an early-exited scan pays only for
+      // the entries it consumed.
       // locate() returns the first index whose key is >= start (the insertion
       // point), so the scan is naturally inclusive of start. It stops at the
       // first key that is not < end, making the range half-open [start, end).
-      const snapshot: Entry[] = [];
+      const snapshot: StoredEntry[] = [];
       for (let i = locate(working, start).index; i < working.length; i++) {
         const entry = working[i] as StoredEntry;
         if (compareKeys(entry.key, end) >= 0) break;
-        snapshot.push({ key: entry.key.slice(), value: entry.value.slice() });
+        snapshot.push(entry);
       }
-      yield* snapshot;
+      for (const entry of snapshot) {
+        yield { key: entry.key.slice(), value: entry.value.slice() };
+      }
     },
   };
 }
@@ -403,11 +410,17 @@ function makeTransaction(working: StoredEntry[], journal: Op[]): Transaction {
 //
 // On-disk layout = an 8-byte file header followed by records:
 //   header: [4-byte magic "LRDB"][u16 formatVersion][u16 reserved]
-//   record: [u32 payloadLength][u32 crc32(payload)][payload]
+//   record: [u32 payloadLength][u32 crc32(payloadLength bytes)][u32 crc32(payload)][payload]
 // The magic is what lets open() refuse a file that is NOT a LibreDB database
 // instead of misparsing arbitrary bytes (and destroying them); the version is
-// what lets the format evolve without ambushing older readers. Files written
-// by v0.1.x predate the header; recovery still reads them (see recover()).
+// what lets the format evolve without ambushing older readers. The record
+// header carries a checksum OF ITSELF (the length field): a torn append can
+// only ever cut bytes off the end — it cannot rewrite the header it already
+// wrote — so a header that is present but fails its own checksum is damage,
+// not a crash, and recovery can refuse it instead of trusting a corrupted
+// length that would misclassify the damage as a torn tail. Files written by
+// v0.1.x predate the file header and use 8-byte record headers with no header
+// checksum; recovery still reads them (see recover()).
 //
 // The payload is the transaction's mutations back to back. Each op is:
 //   set:    [u8 1][u32 keyLength][key][u32 valueLength][value]
@@ -421,8 +434,13 @@ function makeTransaction(working: StoredEntry[], journal: Op[]): Transaction {
 
 const OP_SET = 1;
 const OP_DELETE = 0;
-/** Bytes in a record header: the payload length and its checksum, both u32. */
-const RECORD_HEADER = 8;
+/** Bytes in a v1 record header: payload length, header checksum, payload
+ * checksum — three u32s. */
+const RECORD_HEADER = 12;
+/** Bytes in a headerless v0.1.x record header: payload length and payload
+ * checksum only (no header checksum — the legacy format cannot distinguish a
+ * corrupted length field from a torn tail; v1 exists to fix that). */
+const LEGACY_RECORD_HEADER = 8;
 /** The file magic: "LRDB" in ASCII. A file that does not start with it (and
  * does not parse as a headerless v0.1.x log) is refused, untouched. */
 const MAGIC = Uint8Array.of(0x4c, 0x52, 0x44, 0x42);
@@ -478,8 +496,11 @@ function encodeFileHeader(): Uint8Array {
 }
 
 /** Encode one committed transaction's ops as a length-framed, checksummed
- * record ready to append to the log. */
-function encodeRecord(ops: readonly Op[]): Uint8Array {
+ * record ready to append to the log. `legacy` selects the framing: a database
+ * that opened as a headerless v0.1.x file keeps appending v0.1.x records (a
+ * format cannot change mid-file), while headered v1 files get the v1 record
+ * header with its self-checksum. */
+function encodeRecord(ops: readonly Op[], legacy: boolean): Uint8Array {
   let size = 0;
   for (const op of ops) {
     size += 1 + 4 + op.key.length;
@@ -502,10 +523,19 @@ function encodeRecord(ops: readonly Op[]): Uint8Array {
     }
   }
 
-  const record = new Uint8Array(RECORD_HEADER + size);
+  const header = legacy ? LEGACY_RECORD_HEADER : RECORD_HEADER;
+  const record = new Uint8Array(header + size);
   writeU32(record, 0, size);
-  writeU32(record, 4, crc32(payload));
-  record.set(payload, RECORD_HEADER);
+  if (legacy) {
+    writeU32(record, 4, crc32(payload));
+  } else {
+    // The header checksum covers the length field, so recovery can tell a
+    // trustworthy length (torn tail: truncate) from a damaged one (corruption:
+    // refuse) — see replayLog.
+    writeU32(record, 4, crc32(record.subarray(0, 4)));
+    writeU32(record, 8, crc32(payload));
+  }
+  record.set(payload, header);
   return record;
 }
 
@@ -547,16 +577,19 @@ function replayPayload(entries: StoredEntry[], payload: Uint8Array): void {
 /** What {@link recover} learned about the log. */
 interface Recovery {
   entries: StoredEntry[];
-  /** True for an empty file: the first append must write the file header. A
-   * non-empty headerless v0.1.x file keeps appending headerless records — a
-   * header cannot be inserted mid-file. */
+  /** True for an empty file: the first append must write the file header. */
   needsHeader: boolean;
+  /** True for a headerless v0.1.x file: every future append must keep the
+   * v0.1.x record framing — a file's format cannot change mid-file. */
+  legacy: boolean;
   /** Torn-tail bytes discarded, reported via {@link OpenOptions.onRecovery}. */
   truncatedBytes: number;
 }
 
 /**
- * Replay every record of `log` from `base` onto a fresh entry array.
+ * Replay every record of `log` from `base` onto a fresh entry array. `legacy`
+ * selects the record framing: v1 (12-byte header with a header checksum) or
+ * headerless v0.1.x (8-byte header without one).
  *
  * Failure classification is the heart of recovery:
  *
@@ -564,26 +597,41 @@ interface Recovery {
  *     shorter than a record header, is a TORN TAIL: the append a crash
  *     interrupted. Only the tail can tear (the log is append-only and every
  *     earlier record was fsync'd), so it is truncated away.
- *   - A record that fails its checksum but ends exactly at the file's end is
- *     a DAMAGED TAIL — a half-flushed final block — and truncates the same way.
- *   - A record that fails its checksum with more data AFTER it cannot be a
- *     crash artifact: bytes after it mean a later append succeeded, which means
- *     this record was once durable and has since been damaged (bit rot, a
- *     partial copy, a second writer). That is corruption; recovery THROWS and
- *     leaves the file untouched rather than destroy the committed records
- *     behind the damage.
+ *   - A v1 header that fails its OWN checksum is damage, never a tear: a torn
+ *     append cuts bytes off the end, it does not rewrite bytes it already
+ *     wrote. Trusting the corrupted length would misclassify the damage as a
+ *     torn tail and silently truncate every committed record after it, so
+ *     recovery THROWS. (The legacy format has no header checksum; a damaged
+ *     legacy length field still reads as a torn tail — a documented v0.1.x
+ *     limitation the v1 format exists to close.)
+ *   - A record whose payload fails its checksum but ends exactly at the file's
+ *     end is a DAMAGED TAIL — a half-flushed final block — and truncates.
+ *   - A payload-checksum failure with more data AFTER it cannot be a crash
+ *     artifact: bytes after it mean a later append succeeded, which means this
+ *     record was once durable and has since been damaged (bit rot, a partial
+ *     copy, a second writer). That is corruption; recovery THROWS and leaves
+ *     the file untouched rather than destroy the committed records behind the
+ *     damage.
  */
-function replayLog(log: Uint8Array, base: number): { entries: StoredEntry[]; tail: number; replayed: number } {
+function replayLog(
+  log: Uint8Array,
+  base: number,
+  legacy: boolean,
+): { entries: StoredEntry[]; tail: number; replayed: number } {
+  const header = legacy ? LEGACY_RECORD_HEADER : RECORD_HEADER;
   const entries: StoredEntry[] = [];
   let offset = base;
   let replayed = 0;
-  while (offset + RECORD_HEADER <= log.length) {
+  while (offset + header <= log.length) {
     const size = readU32(log, offset);
-    const start = offset + RECORD_HEADER;
+    if (!legacy && crc32(log.subarray(offset, offset + 4)) !== readU32(log, offset + 4)) {
+      throw new LibreDbError("CORRUPT_WAL", `corrupt WAL record header at offset ${offset}; refusing to open`);
+    }
+    const start = offset + header;
     const end = start + size;
     if (end > log.length) break; // torn tail: fewer bytes than the header promised
     const payload = log.subarray(start, end);
-    if (crc32(payload) !== readU32(log, offset + 4)) {
+    if (crc32(payload) !== readU32(log, offset + (legacy ? 4 : 8))) {
       if (end < log.length) {
         throw new LibreDbError(
           "CORRUPT_WAL",
@@ -622,19 +670,25 @@ function recover(file: WalFile): Recovery {
     // so it is an error, never a recovery.
     throw new LibreDbError("INCOMPLETE_READ", `WAL read returned ${log.length} of ${size} bytes`);
   }
-  if (size === 0) return { entries: [], needsHeader: true, truncatedBytes: 0 };
+  if (size === 0) return { entries: [], needsHeader: true, legacy: false, truncatedBytes: 0 };
 
-  const magicPrefix = Math.min(log.length, MAGIC.length);
-  const hasMagicPrefix = log.subarray(0, magicPrefix).every((byte, i) => byte === MAGIC[i]);
-  if (hasMagicPrefix) {
-    if (log.length < FILE_HEADER) {
-      // A torn header: the very first commit (header + record in one append)
-      // was interrupted before the header finished. Nothing was ever
-      // acknowledged, so start the database over from empty.
-      file.truncate(0);
-      file.fsync();
-      return { entries: [], needsHeader: true, truncatedBytes: log.length };
-    }
+  // A torn first append can only leave a PREFIX of the exact 8 header bytes
+  // this kernel writes (magic + version + reserved), so the recognition test
+  // compares against all of them — "LRDB" followed by anything else is a
+  // foreign file, not a torn header.
+  const expectedHeader = encodeFileHeader();
+  const headerPrefix = Math.min(log.length, FILE_HEADER);
+  const hasHeaderPrefix = log.subarray(0, headerPrefix).every((byte, i) => byte === expectedHeader[i]);
+  const hasMagic = log.length >= MAGIC.length && MAGIC.every((byte, i) => byte === log[i]);
+  if (hasHeaderPrefix && log.length < FILE_HEADER) {
+    // A torn header: the very first commit (header + record in one append)
+    // was interrupted before the header finished. Nothing was ever
+    // acknowledged, so start the database over from empty.
+    file.truncate(0);
+    file.fsync();
+    return { entries: [], needsHeader: true, legacy: false, truncatedBytes: log.length };
+  }
+  if (hasMagic && log.length >= FILE_HEADER) {
     const fileVersion = ((log[4] as number) << 8) | (log[5] as number);
     if (fileVersion !== FORMAT_VERSION) {
       throw new LibreDbError(
@@ -642,7 +696,7 @@ function recover(file: WalFile): Recovery {
         `database format version ${fileVersion} is newer than this library supports (${FORMAT_VERSION})`,
       );
     }
-    return { ...finishReplay(file, log, FILE_HEADER), needsHeader: false };
+    return { ...finishReplay(file, log, FILE_HEADER, false), needsHeader: false, legacy: false };
   }
 
   // No magic: either a headerless v0.1.x database or a foreign file. Probe the
@@ -653,18 +707,24 @@ function recover(file: WalFile): Recovery {
   if (!isLegacyLog(log)) {
     throw new LibreDbError("NOT_A_DATABASE", "file is not a libredb database; refusing to touch it");
   }
-  return { ...finishReplay(file, log, 0), needsHeader: false };
+  return { ...finishReplay(file, log, 0, true), needsHeader: false, legacy: true };
 }
 
-/** Does `log` begin with one complete, checksummed, well-formed v0.1.x record?
- * That is the recognition test for a headerless legacy database: real bytes
- * from this kernel always start with one, foreign bytes essentially never do. */
+/** Does `log` begin with one complete, checksummed, well-formed, NON-EMPTY
+ * v0.1.x record? That is the recognition test for a headerless legacy
+ * database: real bytes from this kernel always start with one (every commit
+ * journals at least one op — an empty transaction is never appended), foreign
+ * bytes essentially never do. The non-empty requirement is load-bearing: an
+ * all-zeros file would otherwise parse as an "empty record" (size 0 and
+ * crc32("") is 0), and a zero-filled foreign file — a preallocated image, a
+ * zeroed-out disk region — would be adopted and written into. */
 function isLegacyLog(log: Uint8Array): boolean {
-  if (log.length < RECORD_HEADER) return false;
+  if (log.length < LEGACY_RECORD_HEADER) return false;
   const size = readU32(log, 0);
-  const end = RECORD_HEADER + size;
+  if (size === 0) return false; // this kernel never writes an empty record
+  const end = LEGACY_RECORD_HEADER + size;
   if (end > log.length) return false;
-  const payload = log.subarray(RECORD_HEADER, end);
+  const payload = log.subarray(LEGACY_RECORD_HEADER, end);
   if (crc32(payload) !== readU32(log, 4)) return false;
   try {
     replayPayload([], payload); // throwaway replay: structural validation only
@@ -680,8 +740,9 @@ function finishReplay(
   file: WalFile,
   log: Uint8Array,
   base: number,
+  legacy: boolean,
 ): { entries: StoredEntry[]; truncatedBytes: number } {
-  const { entries, tail } = replayLog(log, base);
+  const { entries, tail } = replayLog(log, base, legacy);
   const truncatedBytes = log.length - tail;
   if (truncatedBytes > 0) {
     file.truncate(tail);
@@ -708,14 +769,26 @@ function openLog(
   onRecovery: ((info: RecoveryInfo) => void) | undefined,
 ): { entries: StoredEntry[]; log: Log } {
   const file = fs.open(path);
-  const recovery = recover(file);
+  let recovery: Recovery;
+  try {
+    recovery = recover(file);
+  } catch (error) {
+    // A refused open (foreign file, corruption, unsupported version, short
+    // read) must not leak the file handle; the refusal error stays primary.
+    try {
+      file.close();
+    } catch {
+      // The close failed after recovery already failed; surface the original.
+    }
+    throw error;
+  }
   if (recovery.truncatedBytes > 0) onRecovery?.({ truncatedBytes: recovery.truncatedBytes });
   let needsHeader = recovery.needsHeader;
   return {
     entries: recovery.entries,
     log: {
       append(ops) {
-        const record = encodeRecord(ops);
+        const record = encodeRecord(ops, recovery.legacy);
         if (needsHeader) {
           // First commit of a new database: header and record go down in ONE
           // append, so a crash can only ever leave a recognizable prefix
@@ -850,9 +923,14 @@ export const open: Open = (options) => {
         throw new LibreDbError("CLOSE_IN_TRANSACTION", "cannot close the database inside a transaction");
       }
       closed = true;
-      if (log !== null) log.close();
-      releaseLock?.();
-      committed = [];
+      try {
+        if (log !== null) log.close();
+      } finally {
+        // The lock must not outlive the instance even if the underlying file
+        // close throws — a leaked lock would wedge every future open.
+        releaseLock?.();
+        committed = [];
+      }
     },
   };
 };

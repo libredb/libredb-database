@@ -29,9 +29,15 @@ The failure modes *outside* the clean-crash model are handled explicitly rather 
 - **Mid-log corruption refuses to open.** A record that fails its checksum with intact records *after*
   it cannot be a crash artifact (only the final append can tear) — it is damage to once-durable bytes
   (bit rot, a partial copy). Recovery throws `code: "CORRUPT_WAL"` and truncates nothing, preserving
-  the evidence and the committed records behind it. One honest limitation: corruption that hits a
-  record's *length field* on the final record is byte-for-byte indistinguishable from a torn tail in
-  format v1 and truncates like one.
+  the evidence and the committed records behind it. The v1 record header additionally checksums its
+  own *length field*, so a damaged length is also refused as corruption instead of being mistaken for
+  a torn tail (a tear cuts bytes off the end; it never rewrites bytes already written). Headerless
+  v0.1.x files have no header checksum, so a damaged legacy length field still reads as a torn tail —
+  a documented legacy limitation the v1 format closes.
+- **Downgrade warning.** A v1 file opened by LibreDB 0.1.3 or older is silently truncated to zero (the
+  old recovery cannot recognize the header). Never downgrade past this version with live data; back up
+  first. Also: a headerless legacy file whose only record is torn now refuses to open (it is
+  indistinguishable from a foreign file); 0.1.3 opened it as empty.
 - **A short read is an IO fault, not missing data.** If the filesystem returns fewer bytes than the
   file holds, recovery throws (`code: "INCOMPLETE_READ"`) instead of mistaking the cut for a torn tail
   and truncating committed transactions.

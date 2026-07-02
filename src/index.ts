@@ -29,6 +29,13 @@ export const open: Open = (options) =>
     ? openKernel({ ...options, fs: nodeFileSystem() })
     : openKernel(options);
 
+// The adapters, exported so a tool can compose its own open: nodeFileSystem is
+// the default durable adapter; readonlyFileSystem opens a database for
+// INSPECTION — it never writes (recovery drops a torn tail in memory only) and
+// takes no lock, so it can read a file a live writer holds open.
+export { nodeFileSystem } from "./adapter/node-fs.ts";
+export { readonlyFileSystem } from "./cli/readonly-fs.ts";
+
 export { kv } from "./lens/kv.ts";
 export type { Kv, KvEntry } from "./lens/kv.ts";
 

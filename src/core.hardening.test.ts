@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 
 import { LibreDbError, open, type FileSystem, type WalFile } from "./core.ts";
-import { open as openNode } from "./index.ts";
+import { doc, open as openNode, readonlyFileSystem, table } from "./index.ts";
 
 const bytes = (...b: number[]): Uint8Array => new Uint8Array(b);
 
@@ -149,13 +149,15 @@ test("an async transact() callback throws ASYNC_TRANSACTION and commits nothing"
   const db = openNode({ path });
   db.transact((tx) => tx.set(bytes(1), bytes(10)));
 
-  const error = errorFrom(() =>
-    db.transact(async (tx) => {
-      tx.set(bytes(2), bytes(20));
-      await Promise.resolve();
-      tx.set(bytes(3), bytes(30));
-    }),
-  );
+  // The public signature rejects an async callback at COMPILE time (the
+  // PromiseLike -> never intersection), so reaching the runtime guard —
+  // what an untyped JS caller would hit — requires casting past the types.
+  const asyncBody = async (tx: Parameters<Parameters<typeof db.transact>[0]>[0]): Promise<void> => {
+    tx.set(bytes(2), bytes(20));
+    await Promise.resolve();
+    tx.set(bytes(3), bytes(30));
+  };
+  const error = errorFrom(() => db.transact(asyncBody as unknown as () => void));
   expect(error.code).toBe("ASYNC_TRANSACTION");
 
   // Nothing from the async body was committed — not even the pre-await write —
@@ -211,6 +213,50 @@ test("open() on a non-LibreDB file throws NOT_A_DATABASE and leaves every byte i
   expect(readFileSync(path, "utf8")).toBe(contents);
   // The refusal also released the open lock.
   expect(existsSync(`${path}.lock`)).toBe(false);
+});
+
+test("an all-zeros file is refused untouched (it must not parse as an empty legacy record)", () => {
+  // A zero-filled file — a preallocated image, a zeroed disk region — decodes
+  // as a size-0 record whose crc32("") is also 0. This kernel never writes an
+  // empty record (every commit journals at least one op), so zeros are foreign
+  // bytes; adopting them would truncate and then write into a foreign file.
+  for (const length of [8, 1001, 1024]) {
+    const path = tempPath(`zeros-${length}`);
+    writeFileSync(path, new Uint8Array(length)); // all zeros
+    expect(errorFrom(() => openNode({ path })).code).toBe("NOT_A_DATABASE");
+    const disk = new Uint8Array(readFileSync(path));
+    expect(disk.length).toBe(length);
+    expect(disk.every((byte) => byte === 0)).toBe(true);
+  }
+});
+
+test("a short foreign file that shares only the LRDB magic is refused, not truncated", () => {
+  // 'LRDB' followed by NON-header bytes cannot be a torn first append (a torn
+  // header is always a prefix of the exact 8 bytes this kernel writes), so it
+  // is a foreign file and must be left alone.
+  const path = tempPath("lrdb-text");
+  writeFileSync(path, "LRDB\n"); // magic + newline: foreign
+  expect(errorFrom(() => openNode({ path })).code).toBe("NOT_A_DATABASE");
+  expect(readFileSync(path, "utf8")).toBe("LRDB\n");
+});
+
+test("a corrupted record length field is corruption (refused), never a torn tail", () => {
+  const path = tempPath("length-rot");
+  const db = openNode({ path });
+  db.transact((tx) => tx.set(bytes(1), bytes(10)));
+  db.transact((tx) => tx.set(bytes(2), bytes(20)));
+  db.close();
+
+  // Flip a bit in the FIRST record's length field (offset 8 = right after the
+  // file header). The v1 record header checksums its own length field, so this
+  // reads as damage — not as a torn tail that would silently truncate the
+  // acknowledged second commit.
+  const disk = new Uint8Array(readFileSync(path));
+  disk[8] = (disk[8] as number) ^ 0x40; // flip one bit of the length field
+  writeFileSync(path, disk);
+
+  expect(errorFrom(() => openNode({ path })).code).toBe("CORRUPT_WAL");
+  expect(new Uint8Array(readFileSync(path)).length).toBe(disk.length); // untouched
 });
 
 test("a new database writes the LRDB file header with its first commit", () => {
@@ -486,4 +532,33 @@ test("a stale lock from a dead process is reclaimed automatically", () => {
   db.transact((tx) => tx.set(bytes(1), bytes(1)));
   db.close();
   expect(existsSync(`${path}.lock`)).toBe(false);
+});
+
+test("constructing doc() and table() handles inside a transaction works (no nested transact)", () => {
+  // Handle construction must not need a transaction of its own: the doc()
+  // relational-kind guard runs lazily inside each operation's transaction.
+  const path = tempPath("handles-in-tx");
+  const db = openNode({ path });
+  const built = db.transact(() => {
+    return typeof doc(db, "logs").put === "function";
+  });
+  expect(built).toBe(true);
+  // The lazy guard still fires on the first OPERATION.
+  table(db, "accounts", { primaryKey: "id", columns: { id: "string" } }).insert({ id: "a1" });
+  const handle = doc(db, "accounts"); // construction alone is fine...
+  expect(errorFrom(() => handle.get("a1")).code).toBe("INVALID_ARGUMENT"); // ...operations refuse
+  expect(errorFrom(() => handle.put("a2", {})).code).toBe("INVALID_ARGUMENT");
+  db.close();
+});
+
+test("readonlyFileSystem opens a database a live writer holds locked", () => {
+  const path = tempPath("inspect-live");
+  const writer = openNode({ path });
+  writer.transact((tx) => tx.set(bytes(1), bytes(10)));
+  // A concurrent inspector: no lock, no writes — reads the committed state.
+  const inspector = openNode({ path, fs: readonlyFileSystem() });
+  expect(inspector.transact((tx) => tx.get(bytes(1)))).toEqual(bytes(10));
+  inspector.close();
+  writer.transact((tx) => tx.set(bytes(2), bytes(20))); // writer unaffected
+  writer.close();
 });

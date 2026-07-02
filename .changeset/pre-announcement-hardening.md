@@ -4,7 +4,9 @@
 
 Durability, safety, and API-contract hardening across the kernel, adapters, lenses, and CLI (the pre-announcement audit wave).
 
-On-disk format: new databases now begin with an 8-byte `LRDB` magic/version header. Files written by earlier releases (headerless) keep opening through a legacy read path; files written by this release are not readable by older releases. The header is what lets `open()` refuse a file that is not a LibreDB database with a clear error instead of destroying it.
+On-disk format: new databases now begin with an 8-byte `LRDB` magic/version header, and each record header carries a checksum of its own length field. Files written by earlier releases (headerless) keep opening through a legacy read path, and keep their legacy record framing on later appends. The header is what lets `open()` refuse a file that is not a LibreDB database with a clear error instead of destroying it; the record-header checksum is what lets recovery refuse a damaged length field instead of mistaking it for a torn tail.
+
+DOWNGRADE WARNING: a file written by this release must never be opened by 0.1.3 or older — the old recovery cannot parse the header, classifies the whole file as a torn tail, and silently truncates it to zero bytes. Back up before any downgrade. Two smaller legacy-behavior changes: a headerless file whose only record is torn/incomplete now refuses to open as `NOT_A_DATABASE` (0.1.3 recovered it to an empty database; refusing is the safe reading, since such a file is indistinguishable from a foreign one), and a legacy length-field corruption still reads as a torn tail (the legacy format has no header checksum — the v1 format exists to close exactly that gap).
 
 Kernel:
 
@@ -34,6 +36,8 @@ Lenses:
 CLI:
 
 - Write commands rely on the kernel's exclusive lock; `--force` removes a lock only when its holder is not verifiably alive, and never deletes a file that is not a libredb lock.
-- `get`/`scan` escape control characters by default so untrusted values cannot inject terminal escape sequences; `--raw` prints verbatim.
+- `get`/`scan` escape control characters (including tab and newline) by default so untrusted values cannot inject terminal escape sequences — scripts that consumed values verbatim should pass `--raw`.
 
-Docker image now runs as a non-root user (distroless `:nonroot`, uid 65532).
+New exports: `LibreDbError`, `ErrorCode`, `RecoveryInfo`, `nodeFileSystem`, and `readonlyFileSystem` (open a database for inspection with no lock and no writes — the supported way to read a file a live writer holds).
+
+Docker image now runs as a non-root user (distroless `:nonroot`, uid 65532): bind-mounted directories must be writable by that uid, or pass `--user "$(id -u):$(id -g)"`.

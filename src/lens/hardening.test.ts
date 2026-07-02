@@ -93,14 +93,28 @@ test("NaN and the infinities are rejected by number column validation", () => {
 
 // --- issue #30: a name belongs to one lens ---
 
-test("doc() refuses a name cataloged as a relational table", () => {
+test("doc() operations refuse a name cataloged as a relational table", () => {
   const db = open();
   table(db, "accounts", SCHEMA).insert({ id: "a1", n: 1 });
-  const error = errorFrom(() => doc(db, "accounts"));
-  expect(error.code).toBe("INVALID_ARGUMENT");
-  expect(error.message).toMatch(/use table\(\)/);
-  // The catalog's faithful view survived: still relational, schema intact.
+  // Construction succeeds (the guard is lazy so handles can be built inside a
+  // transaction); every OPERATION refuses, so schema validation cannot be
+  // bypassed through a doc() handle.
+  const handle = doc(db, "accounts");
+  for (const op of [
+    () => handle.put("a2", { rogue: true }),
+    () => handle.get("a1"),
+    () => handle.delete("a1"),
+    () => handle.all().toArray(),
+    () => handle.find({}).toArray(),
+  ]) {
+    const error = errorFrom(op);
+    expect(error.code).toBe("INVALID_ARGUMENT");
+    expect(error.message).toMatch(/use table\(\)/);
+  }
+  // The catalog's faithful view survived: still relational, schema intact,
+  // and no rogue row landed.
   expect(catalog(db).get("accounts")).toEqual({ kind: "relational", schema: SCHEMA });
+  expect(table(db, "accounts", SCHEMA).get("a2")).toBeUndefined();
   db.close();
 });
 

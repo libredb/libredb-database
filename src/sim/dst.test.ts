@@ -102,22 +102,22 @@ test("a torn in-flight append is discarded; committed state survives the crash",
 /** The byte offset where records start: past the 8-byte file header. */
 const RECORDS_BASE = 8;
 
-test("a corrupted length field on the final record is indistinguishable from a torn tail and truncates", () => {
+test("a corrupted length field refuses to open instead of masquerading as a torn tail", () => {
   const fs = new SimFS(3);
   const steps: WorkloadStep[] = [{ ops: [{ kind: "set", key: "k0", value: "a" }], abort: false }];
   const db = open({ path: WAL, fs });
   runWorkload(db, steps);
 
-  // Flip a byte in the LAST record's length field. The promised end then lies
-  // beyond the file, which is byte-for-byte what a torn tail looks like —
-  // format v1 has no per-record header to tell them apart (see DESIGN.md), so
-  // recovery truncates from that record on. Every record before it survives;
-  // here there are none, so the store recovers empty.
+  // Flip a byte in a record's length field. In format v1 the record header
+  // carries a checksum of its own length field, precisely so this damage is
+  // NOT mistaken for a torn tail (a tear cuts bytes off the end; it cannot
+  // rewrite header bytes that were already written). Recovery must refuse the
+  // open and leave every byte in place.
+  const before = fs.durableBytes(WAL);
   fs.corrupt(WAL, RECORDS_BASE);
 
-  const recovered = dump(open({ path: WAL, fs }));
-  expect(recovered.size).toBe(0);
-  expect(isCommittedPrefix(recovered, committedPrefixStates(steps))).toBe(true);
+  expect(() => open({ path: WAL, fs })).toThrow(/corrupt WAL record header/i);
+  expect(fs.durableBytes(WAL).length).toBe(before.length);
 });
 
 test("mid-log payload corruption refuses to open instead of truncating committed data", () => {

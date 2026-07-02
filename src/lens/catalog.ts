@@ -99,12 +99,18 @@ export function assertUserName(name: string): void {
   assertWellFormedText(name, "namespace name");
 }
 
-/** The cataloged kind of `name`, or undefined when it is not cataloged. The
+/** The cataloged kind of `name` as seen through `read` (a point-read inside
+ * the caller's own transaction), or undefined when it is not cataloged. The
  * lens entry points use this to route a name to the right lens: `doc()` refuses
  * a relational table (its rows are schema-validated), `table()` refuses a
- * document collection (its documents never were). */
-export function catalogKindOf(store: Store, name: string): CatalogEntry["kind"] | undefined {
-  const bytes = store.transact((tx) => tx.get(catalogKey(name)));
+ * document collection (its documents never were). Taking a read function
+ * instead of a Store keeps the check inside whatever transaction the caller is
+ * already running — the kernel forbids nesting a fresh one. */
+export function catalogKindAt(
+  read: (key: Uint8Array) => Uint8Array | undefined,
+  name: string,
+): CatalogEntry["kind"] | undefined {
+  const bytes = read(catalogKey(name));
   return bytes === undefined ? undefined : (JSON.parse(fromUtf8.decode(bytes)) as CatalogEntry).kind;
 }
 

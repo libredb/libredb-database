@@ -5,6 +5,7 @@
 // lock, reopen, and read everything back. Run with `node scripts/node-smoke.mjs`
 // after `bun run build`.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,7 +44,13 @@ try {
   }).get("p1"), { id: "p1", name: "Ada" });
   reopened.close();
 
-  console.log("node smoke: ok (open, lenses, lock, reopen all behaved under Node)");
+  // One pass of the CLI entry under Node, against the same database.
+  const out = execFileSync(process.execPath, ["dist/cli/main.js", "get", path, "greeting"], {
+    encoding: "utf8",
+  });
+  assert.equal(out.trim(), "hello from node");
+
+  console.log("node smoke: ok (open, lenses, lock, reopen, and the CLI all behaved under Node)");
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

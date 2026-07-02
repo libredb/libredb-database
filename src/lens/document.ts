@@ -13,7 +13,7 @@
  */
 import { result, type Result, type WriteResult } from "./types.ts";
 import { prefixRange } from "../query/range.ts";
-import { assertUserName, assertWellFormedText, catalogKindOf, recordDocument } from "./catalog.ts";
+import { assertUserName, assertWellFormedText, catalogKindAt, recordDocument } from "./catalog.ts";
 import type { Store } from "../adapter/store.ts";
 import { LibreDbError } from "../core.ts";
 
@@ -187,21 +187,37 @@ export function doc(store: Store, collection: string): DocCollection {
   // A collection name may not intrude on the reserved catalog namespace and
   // must be isolatable in the key layout — reject it before any key is derived.
   assertUserName(collection);
-  if (catalogKindOf(store, collection) === "relational") {
-    throw new LibreDbError(
-      "INVALID_ARGUMENT",
-      `${JSON.stringify(collection)} is a relational table; use table() instead of doc()`,
-    );
-  }
-  return collectionHandle(store, collection);
+  // The relational-kind guard runs INSIDE each operation's own transaction
+  // (lazily, memoized after the first pass) rather than here: a construction-
+  // time check would need a transaction of its own, which would break the
+  // established pattern of building a handle inside a transact() body.
+  let checked = false;
+  const ensure = (read: (key: Uint8Array) => Uint8Array | undefined): void => {
+    if (checked) return;
+    if (catalogKindAt(read, collection) === "relational") {
+      throw new LibreDbError(
+        "INVALID_ARGUMENT",
+        `${JSON.stringify(collection)} is a relational table; use table() instead of doc()`,
+      );
+    }
+    checked = true;
+  };
+  return collectionHandle(store, collection, ensure);
 }
 
 /**
  * The unguarded collection builder behind {@link doc}. The relational lens uses
  * it directly: a table IS this handle plus schema validation, so the "is this
  * name relational?" guard that protects doc() callers must not apply there.
+ * `ensure` (when given) runs at the start of every operation's transaction —
+ * doc() uses it to refuse a relational table's name without needing its own
+ * transaction at construction time.
  */
-export function collectionHandle(store: Store, collection: string): DocCollection {
+export function collectionHandle(
+  store: Store,
+  collection: string,
+  ensure?: (read: (key: Uint8Array) => Uint8Array | undefined) => void,
+): DocCollection {
   // The byte range covering every `<collection>:` key. prefixRange computes the
   // [start, end) bound on raw bytes so it agrees with the kernel's order, which
   // is what makes the colon a sound collection boundary (a sibling like "users2"
@@ -218,6 +234,7 @@ export function collectionHandle(store: Store, collection: string): DocCollectio
   const scan = (keep: (document: Doc) => boolean): Result<DocEntry> =>
     result(() =>
       store.transact((tx) => {
+        ensure?.((key) => tx.get(key));
         const rows: DocEntry[] = [];
         for (const entry of tx.getRange(start, end)) {
           const document = decodeDoc(entry.value);
@@ -238,6 +255,7 @@ export function collectionHandle(store: Store, collection: string): DocCollectio
       // encoding — two distinct malformed ids would silently share one key.
       assertWellFormedText(id, "document id");
       store.transact((tx) => {
+        ensure?.((key) => tx.get(key));
         // Register this collection in the catalog on its first write (DESIGN.md
         // section 6.3). Idempotent and inside the write's own transaction, so the
         // registration and the document are durable together. A table's inserts
@@ -250,6 +268,7 @@ export function collectionHandle(store: Store, collection: string): DocCollectio
     },
     get(id) {
       return store.transact((tx) => {
+        ensure?.((key) => tx.get(key));
         const bytes = tx.get(keyOf(collection, id));
         return bytes === undefined ? undefined : decodeDoc(bytes);
       });
@@ -258,6 +277,7 @@ export function collectionHandle(store: Store, collection: string): DocCollectio
       // Read-before-delete in one transaction: the kernel's delete is a silent
       // no-op on a missing key, so this is how the lens tells 1 from 0 changes.
       const changed = store.transact((tx) => {
+        ensure?.((key) => tx.get(key));
         const k = keyOf(collection, id);
         const existed = tx.get(k) !== undefined;
         tx.delete(k);

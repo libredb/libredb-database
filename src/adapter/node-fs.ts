@@ -28,6 +28,7 @@ import {
   openSync,
   readFileSync,
   readSync,
+  renameSync,
   rmSync,
   writeSync,
 } from "node:fs";
@@ -114,23 +115,58 @@ function tryCreateLock(lockPath: string, contents: string): boolean {
 }
 
 /**
- * Remove a lock file with `--force` semantics: a LibreDb lock is removed
+ * Atomically claim `lockPath` for removal by renaming it aside, then judge the
+ * CLAIMED file's contents with `verdict`. Rename is the atomicity primitive:
+ * of N racers, exactly one wins the rename (the rest see ENOENT and report
+ * "gone") — so check-then-delete can never remove a lock a NEW writer created
+ * between the check and the delete. If `verdict` refuses, the file is renamed
+ * back so the refused lock keeps protecting its holder.
+ *
+ * Returns "removed" | "gone" (nothing to claim) | never (verdict threw).
+ */
+function claimAndRemoveLock(lockPath: string, verdict: (contents: string) => void): "removed" | "gone" {
+  const claimed = `${lockPath}.claim-${process.pid}-${randomBytes(4).toString("hex")}`;
+  try {
+    renameSync(lockPath, claimed);
+  } catch (error) {
+    if ((error as { code?: string }).code === "ENOENT") return "gone"; // another racer won
+    throw error;
+  }
+  let contents: string;
+  try {
+    contents = readFileSync(claimed, "utf8");
+    verdict(contents);
+  } catch (error) {
+    // Refused (or unreadable): put the lock back where it was so its holder
+    // stays protected, then surface the refusal.
+    renameSync(claimed, lockPath);
+    throw error;
+  }
+  rmSync(claimed, { force: true });
+  return "removed";
+}
+
+/**
+ * Remove a lock file with `--force` semantics: a LibreDB lock is removed
  * unless its holder is VERIFIABLY alive (same host, pid exists); a foreign
  * file is always refused. An unverifiable holder (another host) is removed —
  * that is exactly the case force exists for — with the risk on the caller.
- * Exported for the CLI, which offers this as its `--force` flag.
+ * The claim is atomic (rename-aside), so force can never delete a lock a new
+ * writer acquired after the stale one was observed. Exported for the CLI,
+ * which offers this as its `--force` flag.
  */
 export function forceUnlock(path: string): void {
   const lockPath = `${path}.lock`;
   if (!existsSync(lockPath)) return; // nothing to remove
-  const owner = parseLock(readFileSync(lockPath, "utf8"));
-  if (owner === null) {
-    throw new LibreDbError("LOCKED", `refusing to remove ${lockPath}: not a libredb lock file`);
-  }
-  if (owner !== undefined && livenessOf(owner) === "alive") {
-    throw new LibreDbError("LOCKED", `refusing to remove ${lockPath}: holder (pid ${owner.pid}) is alive`);
-  }
-  rmSync(lockPath, { force: true });
+  claimAndRemoveLock(lockPath, (contents) => {
+    const owner = parseLock(contents);
+    if (owner === null) {
+      throw new LibreDbError("LOCKED", `refusing to remove ${lockPath}: not a libredb lock file`);
+    }
+    if (owner !== undefined && livenessOf(owner) === "alive") {
+      throw new LibreDbError("LOCKED", `refusing to remove ${lockPath}: holder (pid ${owner.pid}) is alive`);
+    }
+  });
 }
 
 /**
@@ -203,18 +239,40 @@ export function nodeFileSystem(): FileSystem {
       for (let attempt = 0; attempt < 2; attempt++) {
         if (tryCreateLock(lockPath, contents)) {
           return () => {
-            // Release only OUR lock: if someone force-removed it and locked
-            // again, deleting theirs would let a third writer in.
+            // Release only OUR lock — atomically. If someone force-removed it
+            // and locked again, the claimed contents carry THEIR nonce; the
+            // verdict throws, the rename puts their lock back, and we leave it
+            // alone (a plain check-then-delete would race a fresh acquire).
             try {
-              if (parseLock(readFileSync(lockPath, "utf8"))?.nonce !== nonce) return;
+              claimAndRemoveLock(lockPath, (c) => {
+                if (parseLock(c)?.nonce !== nonce) throw new Error("not ours");
+              });
             } catch {
-              return; // already gone
+              // Not ours or already gone: either way there is nothing to release.
             }
-            rmSync(lockPath, { force: true });
           };
         }
         if (!isStaleLock(lockPath)) break;
-        rmSync(lockPath, { force: true }); // reclaim the stale lock, then retry
+        // Reclaim the stale lock ATOMICALLY: rename-aside means that of N
+        // processes racing this reclaim, exactly one removes the stale file —
+        // the losers see it gone and retry the exclusive create, where again
+        // exactly one wins. Two concurrent writers can never both acquire.
+        // The verdict re-checks staleness on the claimed bytes: if a NEW
+        // writer's lock slid in between the check and the claim, it is put
+        // back untouched.
+        try {
+          if (
+            claimAndRemoveLock(lockPath, (c) => {
+              const owner = parseLock(c);
+              if (owner === null) throw new Error("foreign file");
+              if (owner !== undefined && livenessOf(owner) === "alive") throw new Error("holder alive");
+            }) === "gone"
+          ) {
+            continue; // another racer reclaimed it; retry the exclusive create
+          }
+        } catch {
+          break; // a live or foreign lock appeared: locked
+        }
       }
       throw new LibreDbError(
         "LOCKED",
