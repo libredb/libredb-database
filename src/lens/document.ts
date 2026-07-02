@@ -13,8 +13,9 @@
  */
 import { result, type Result, type WriteResult } from "./types.ts";
 import { prefixRange } from "../query/range.ts";
-import { assertUserName, recordDocument } from "./catalog.ts";
+import { assertUserName, assertWellFormedText, catalogKindOf, recordDocument } from "./catalog.ts";
 import type { Store } from "../adapter/store.ts";
+import { LibreDbError } from "../core.ts";
 
 /**
  * Any value JSON can represent: the closure of the primitives under arrays and
@@ -107,6 +108,25 @@ export function matches(document: Doc, predicate: Doc): boolean {
 }
 
 /**
+ * Reject a predicate carrying an explicit `undefined` field value. `undefined`
+ * is not a {@link JsonValue} — no stored document can hold it — but an untyped
+ * JS caller passing `{ status: maybeUndefined }` would otherwise match every
+ * document MISSING the field (deepEqual's undefined === undefined), silently
+ * inverting the query's meaning. Validated eagerly at find()/where() call time,
+ * so the mistake surfaces even against an empty collection.
+ */
+export function assertDefinedPredicate(predicate: Doc): void {
+  for (const key of Object.keys(predicate)) {
+    if (predicate[key] === undefined) {
+      throw new LibreDbError(
+        "INVALID_ARGUMENT",
+        `predicate field ${JSON.stringify(key)} is undefined — not a JSON value; omit the field to not filter by it`,
+      );
+    }
+  }
+}
+
+/**
  * The kernel key for one document: `<collection>:<id>`, UTF-8 encoded (DESIGN.md
  * section 6.1). Prefixing every id with the collection name is what scopes a
  * collection to a contiguous byte range, so a later `<collection>:` prefix scan
@@ -158,13 +178,30 @@ export interface DocCollection {
 /**
  * Build a {@link DocCollection} handle scoped to `collection` over a
  * {@link Store} (the kernel's `Database` satisfies it, as does any object that
- * can run a transaction).
+ * can run a transaction). Refuses a name the catalog records as a RELATIONAL
+ * table: its rows are schema-validated, and a doc() handle would write around
+ * that validation and break the catalog's faithful-view contract — use
+ * {@link import("./relational.ts").table} for it instead.
  */
 export function doc(store: Store, collection: string): DocCollection {
-  // A collection name may not intrude on the reserved catalog namespace
-  // (DESIGN.md section 6.3) — reject it loudly before any key is derived.
+  // A collection name may not intrude on the reserved catalog namespace and
+  // must be isolatable in the key layout — reject it before any key is derived.
   assertUserName(collection);
+  if (catalogKindOf(store, collection) === "relational") {
+    throw new LibreDbError(
+      "INVALID_ARGUMENT",
+      `${JSON.stringify(collection)} is a relational table; use table() instead of doc()`,
+    );
+  }
+  return collectionHandle(store, collection);
+}
 
+/**
+ * The unguarded collection builder behind {@link doc}. The relational lens uses
+ * it directly: a table IS this handle plus schema validation, so the "is this
+ * name relational?" guard that protects doc() callers must not apply there.
+ */
+export function collectionHandle(store: Store, collection: string): DocCollection {
   // The byte range covering every `<collection>:` key. prefixRange computes the
   // [start, end) bound on raw bytes so it agrees with the kernel's order, which
   // is what makes the colon a sound collection boundary (a sibling like "users2"
@@ -197,6 +234,9 @@ export function doc(store: Store, collection: string): DocCollection {
 
   return {
     put(id, document) {
+      // An id with a lone surrogate cannot round-trip through the UTF-8 key
+      // encoding — two distinct malformed ids would silently share one key.
+      assertWellFormedText(id, "document id");
       store.transact((tx) => {
         // Register this collection in the catalog on its first write (DESIGN.md
         // section 6.3). Idempotent and inside the write's own transaction, so the
@@ -229,6 +269,9 @@ export function doc(store: Store, collection: string): DocCollection {
       return scan(() => true);
     },
     find(predicate) {
+      // Validated eagerly, so `{ field: undefined }` fails at the call site
+      // instead of silently matching documents that LACK the field.
+      assertDefinedPredicate(predicate);
       return scan((document) => matches(document, predicate));
     },
   };

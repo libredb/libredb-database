@@ -23,7 +23,7 @@
  */
 import { prefixRange } from "../query/range.ts";
 import type { Store } from "../adapter/store.ts";
-import type { Transaction } from "../core.ts";
+import { LibreDbError, type Transaction } from "../core.ts";
 import type { TableSchema } from "./relational.ts";
 
 /**
@@ -45,20 +45,67 @@ export const RESERVED_MARKER = "\x00";
 export const CATALOG_PREFIX: string = `${RESERVED_MARKER}libredb:catalog:`;
 
 /**
- * Reject a user namespace name that begins with the reserved marker — a loud
- * error, the same class of correctness rule as the prefix-soundness checks the
- * lenses already enforce. Such a name could place a user key inside the catalog
- * namespace and break the isolation the catalog relies on, so it is forbidden
- * outright rather than silently remapped. Called by `doc` and `table` when a
- * handle is built; the raw kv lens is deliberately not guarded — it is the raw
- * layer with full keyspace access (DESIGN.md section 6.3).
+ * Reject a string that is not well-formed UTF-16 (it contains a lone
+ * surrogate). Such a string cannot round-trip through the UTF-8 encoding the
+ * lenses store keys in — every lone surrogate encodes to the same replacement
+ * character, so two DISTINCT malformed strings silently collide on one key.
+ * Rejecting at the lens boundary keeps "distinct strings are distinct keys"
+ * true. Shared by the kv lens (keys) and the document lens (ids and names).
+ */
+export function assertWellFormedText(text: string, what: string): void {
+  if (!text.isWellFormed()) {
+    throw new LibreDbError(
+      "INVALID_ARGUMENT",
+      `${what} ${JSON.stringify(text)} contains a lone surrogate and cannot round-trip through UTF-8`,
+    );
+  }
+}
+
+/**
+ * Reject a user namespace name the key layout cannot isolate — a loud error,
+ * the same class of correctness rule as the prefix-soundness checks the lenses
+ * already enforce. Three shapes are forbidden outright rather than silently
+ * remapped, because each would let one namespace's keys collide with another's:
+ *
+ *   - a name starting with the reserved marker would place user keys inside the
+ *     catalog namespace;
+ *   - a name containing ":" breaks the `<name>:` byte boundary the lenses scan
+ *     by — `doc(db, "tenant:1")` and id "x" would collide with `doc(db,
+ *     "tenant")` id "1:x" (encode the tenant into the ID, not the name);
+ *   - an empty name would make every id a bare `:<id>` key shared by all
+ *     empty-named namespaces.
+ *
+ * Called by `doc` and `table` when a handle is built; the raw kv lens is
+ * deliberately not guarded — it is the raw layer with full keyspace access
+ * (DESIGN.md section 6.3).
  */
 export function assertUserName(name: string): void {
   if (name.startsWith(RESERVED_MARKER)) {
-    throw new Error(
-      `libredb: namespace name ${JSON.stringify(name)} may not start with the reserved catalog marker (U+0000)`,
+    throw new LibreDbError(
+      "INVALID_ARGUMENT",
+      `namespace name ${JSON.stringify(name)} may not start with the reserved catalog marker (U+0000)`,
     );
   }
+  if (name === "") {
+    throw new LibreDbError("INVALID_ARGUMENT", "namespace name may not be empty");
+  }
+  if (name.includes(":")) {
+    throw new LibreDbError(
+      "INVALID_ARGUMENT",
+      `namespace name ${JSON.stringify(name)} may not contain ":" (it delimits the namespace in the key ` +
+        `layout); encode variable parts into document ids instead`,
+    );
+  }
+  assertWellFormedText(name, "namespace name");
+}
+
+/** The cataloged kind of `name`, or undefined when it is not cataloged. The
+ * lens entry points use this to route a name to the right lens: `doc()` refuses
+ * a relational table (its rows are schema-validated), `table()` refuses a
+ * document collection (its documents never were). */
+export function catalogKindOf(store: Store, name: string): CatalogEntry["kind"] | undefined {
+  const bytes = store.transact((tx) => tx.get(catalogKey(name)));
+  return bytes === undefined ? undefined : (JSON.parse(fromUtf8.decode(bytes)) as CatalogEntry).kind;
 }
 
 /**
@@ -144,6 +191,12 @@ export function recordRelational(store: Store, name: string, schema: TableSchema
       return;
     }
     const persisted = JSON.parse(fromUtf8.decode(existing)) as CatalogEntry;
+    if (persisted.kind !== "relational") {
+      throw new LibreDbError(
+        "INVALID_ARGUMENT",
+        `${JSON.stringify(name)} is a ${persisted.kind} namespace; use its own lens instead of table()`,
+      );
+    }
     if (persisted.schema === undefined || !schemasEqual(persisted.schema, schema)) {
       throw new Error(
         `libredb: table ${JSON.stringify(name)} was reopened with a schema that does not match ` +

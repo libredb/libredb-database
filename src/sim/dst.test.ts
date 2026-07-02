@@ -25,6 +25,7 @@ import { SimFS } from "./simfs.ts";
 import {
   committedPrefixStates,
   describeFailure,
+  injectTornTail,
   isCommittedPrefix,
   mapEqual,
   runSeed,
@@ -168,6 +169,91 @@ test("a short read during recovery is an IO fault, not license to truncate commi
   // The fault was transient: the very next open succeeds with the full model.
   const recovered = dump(open({ path: WAL, fs }));
   expect(mapEqual(recovered, modelAfter(steps))).toBe(true);
+});
+
+// --- IO-error fault profiles (audit B3 / issue #25) ---
+
+const utf8 = new TextEncoder();
+
+/** Apply `steps`' committed effects onto `model`, accumulating across cycles
+ * (modelAfter starts from empty; multi-cycle runs need the running total). */
+function applySteps(model: Map<string, string>, steps: readonly WorkloadStep[]): void {
+  for (const step of steps) {
+    if (step.abort) continue;
+    for (const op of step.ops) {
+      if (op.kind === "set") model.set(op.key, op.value);
+      else model.delete(op.key);
+    }
+  }
+}
+
+test("a partial-append fault latches the database and never destroys acknowledged commits", () => {
+  for (let seed = 0; seed < 10; seed++) {
+    const fs = new SimFS(seed);
+    const db = open({ path: WAL, fs });
+    const steps = generateWorkload(seed, { steps: 30, abortRate: 0 });
+    runWorkload(db, steps);
+    const expected = modelAfter(steps);
+
+    // The next commit's append persists only a torn prefix, then throws.
+    fs.armAppendError();
+    expect(() => db.transact((tx) => tx.set(utf8.encode("doomed"), utf8.encode("x")))).toThrow(/ENOSPC/);
+    // Error-then-continue: the database refuses further work (the latch) —
+    // appending after the torn bytes would poison every later commit.
+    expect(() => db.transact((tx) => tx.set(utf8.encode("later"), utf8.encode("y")))).toThrow(/reopen/);
+
+    // Crash, reopen: every acknowledged commit survives; the doomed one never
+    // appears (its record is torn by construction).
+    fs.crash();
+    const recovered = dump(open({ path: WAL, fs }));
+    expect(mapEqual(recovered, expected)).toBe(true);
+  }
+});
+
+test("a failed fsync latches the database; recovery lands on acknowledged state, at most plus the unacknowledged tail", () => {
+  for (let seed = 0; seed < 10; seed++) {
+    const fs = new SimFS(seed);
+    const db = open({ path: WAL, fs });
+    const steps = generateWorkload(seed, { steps: 30, abortRate: 0 });
+    runWorkload(db, steps);
+    const expected = modelAfter(steps);
+
+    fs.armFsyncError();
+    expect(() => db.transact((tx) => tx.set(utf8.encode("doomed"), utf8.encode("x")))).toThrow(/EIO/);
+    expect(() => db.transact((tx) => tx.set(utf8.encode("later"), utf8.encode("y")))).toThrow(/reopen/);
+
+    // The doomed commit's bytes were fully appended but never fsync'd: a crash
+    // may keep any prefix of them. The honest durability contract is a LOWER
+    // bound — every acknowledged commit survives; the unacknowledged commit MAY
+    // also survive if its whole record reached the disk (the same contract real
+    // databases have for an errored commit).
+    fs.crash();
+    const recovered = dump(open({ path: WAL, fs }));
+    const withDoomed = new Map(expected);
+    withDoomed.set("doomed", "x");
+    expect(mapEqual(recovered, expected) || mapEqual(recovered, withDoomed)).toBe(true);
+  }
+});
+
+test("crash-recover-write cycles preserve every acknowledged commit across generations", () => {
+  for (let seed = 100; seed < 105; seed++) {
+    const fs = new SimFS(seed);
+    const cumulative = new Map<string, string>();
+    for (let cycle = 0; cycle < 5; cycle++) {
+      const db = open({ path: WAL, fs });
+      // The durability lower bound: everything committed in EVERY earlier
+      // cycle is still here, exactly.
+      expect(mapEqual(dump(db), cumulative)).toBe(true);
+      const steps = generateWorkload(seed * 31 + cycle, { steps: 20 });
+      runWorkload(db, steps);
+      applySteps(cumulative, steps);
+      // Crash without closing, sometimes with a torn in-flight append first.
+      if (cycle % 2 === 0) injectTornTail(fs);
+      fs.crash();
+    }
+    const recovered = dump(open({ path: WAL, fs }));
+    expect(mapEqual(recovered, cumulative)).toBe(true);
+  }
 });
 
 // --- the oracle helpers themselves ---

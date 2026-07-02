@@ -30,12 +30,27 @@ interface Io {
 }
 
 /** Everything a command handler needs: the file path, the command's positional
- * arguments (everything after the path), the IO sink, and the `--force` flag. */
+ * arguments (everything after the path), the IO sink, and the flags. */
 interface Ctx {
   path: string;
   args: string[];
   io: Io;
   force: boolean;
+  raw: boolean;
+}
+
+/**
+ * Escape control characters for terminal output. A stored value is arbitrary
+ * user data; printed verbatim it could carry ANSI/OSC sequences that move the
+ * cursor, retitle the window, or write the clipboard of whoever inspects the
+ * file — the classic escape-injection gap in tools that dump untrusted bytes.
+ * Every C0 control (including newline — output here is line-oriented), DEL,
+ * and C1 control renders as its \xNN escape instead. `--raw` opts out.
+ */
+function sanitize(text: string, raw: boolean): string {
+  if (raw) return text;
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
 }
 
 const encoder = new TextEncoder();
@@ -55,6 +70,7 @@ const USAGE = [
   "",
   "Options:",
   "  --force                            Remove a write lock whose holder is no longer alive",
+  "  --raw                              Print values verbatim (default escapes control characters)",
 ].join("\n");
 
 /** Open `path` read-only, run `fn`, and always close — so a read leaves the file
@@ -115,7 +131,7 @@ function stats({ path, io }: Ctx): number {
   });
 }
 
-function get({ path, args, io }: Ctx): number {
+function get({ path, args, io, raw }: Ctx): number {
   const [key] = args;
   if (key === undefined) {
     io.err("missing <key>");
@@ -127,19 +143,21 @@ function get({ path, args, io }: Ctx): number {
       io.err(`key not found: ${key}`);
       return 1;
     }
-    io.out(value);
+    io.out(sanitize(value, raw));
     return 0;
   });
 }
 
-function scan({ path, args, io }: Ctx): number {
+function scan({ path, args, io, raw }: Ctx): number {
   const [prefix] = args;
   if (prefix === undefined) {
     io.err("missing <prefix>");
     return 2;
   }
   return withReadDb(path, (db) => {
-    for (const entry of kv(db).prefix(prefix)) io.out(`${entry.key}=${entry.value}`);
+    for (const entry of kv(db).prefix(prefix)) {
+      io.out(`${sanitize(entry.key, raw)}=${sanitize(entry.value, raw)}`);
+    }
     return 0;
   });
 }
@@ -235,12 +253,16 @@ const commands = new Map<string, (ctx: Ctx) => number>([
 
 export function run(argv: string[], io: Io): number {
   let positionals: string[];
-  let values: { help?: boolean; force?: boolean };
+  let values: { help?: boolean; force?: boolean; raw?: boolean };
   try {
     const parsed = parseArgs({
       args: argv,
       allowPositionals: true,
-      options: { help: { type: "boolean", short: "h" }, force: { type: "boolean" } },
+      options: {
+        help: { type: "boolean", short: "h" },
+        force: { type: "boolean" },
+        raw: { type: "boolean" },
+      },
     });
     positionals = parsed.positionals;
     values = parsed.values;
@@ -268,7 +290,7 @@ export function run(argv: string[], io: Io): number {
   }
 
   try {
-    return handler({ path, args: positionals.slice(2), io, force: values.force === true });
+    return handler({ path, args: positionals.slice(2), io, force: values.force === true, raw: values.raw === true });
   } catch (error) {
     io.err(error instanceof Error ? error.message : String(error));
     return 1;

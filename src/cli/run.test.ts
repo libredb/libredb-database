@@ -309,6 +309,23 @@ test("import refuses a reserved key so it cannot corrupt the catalog", () => {
   expect(r.err.join("\n")).toMatch(/reserved key/i);
 });
 
+test("get and scan escape control characters so stored data cannot drive the terminal", () => {
+  const path = fixture();
+  cli("set", path, "evil", "\u001b[2Jcleared\u0007bell");
+  const got = cli("get", path, "evil");
+  expect(got.code).toBe(0);
+  expect(got.out).toEqual(["\\x1b[2Jcleared\\x07bell"]); // no raw ESC/BEL reaches the sink
+  const scanned = cli("scan", path, "evil");
+  expect(scanned.out).toEqual(["evil=\\x1b[2Jcleared\\x07bell"]);
+});
+
+test("--raw prints the stored bytes verbatim for callers that want them", () => {
+  const path = fixture();
+  cli("set", path, "evil", "\u001b[31mred");
+  const r = cli("get", path, "evil", "--raw");
+  expect(r.out).toEqual(["\u001b[31mred"]);
+});
+
 test("a read recovers a crash-torn file in memory without changing the bytes on disk", () => {
   const path = fixture();
   // Simulate a crash mid-append: tack a partial/garbage record onto the WAL.
