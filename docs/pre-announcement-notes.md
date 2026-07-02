@@ -197,3 +197,65 @@ The crash model (append-only + CRC + fsync-before-visible + torn-tail truncation
 
 **Method**
 8 parallel expert reviewers (kernel durability, API contract, lenses, CLI/multi-process, adapters, test adequacy, supply chain, database must-haves) → every finding adversarially verified (critical/high: two independent refuters, unanimous confirmation required) → completeness critic. All findings cite real code read from the working tree at commit ccaca81. Refuted claims were discarded; severities shown are post-verification.
+
+---
+
+
+## Github Issues
+
+Pre-announcement audit (docs/pre-announcement-notes.md) derinlemesine incelendi; 30 yeni GitHub issue açıldı, 4 mevcut issue milestone/label ile audit programına bağlandı. Issue gövdeleri agent odaklı: dosya referansları, kök neden, kabul kriterleri, test gereksinimleri, changeset notu ve bun run gate doğrulaması.
+
+
+### Altyapı
+#### Milestone'lar:
+
+| **Milestone** | **Issue sayısı** | **Amaç** |
+| ------- | ----------- | --------- |
+| Wave 1: Pre-announcement blockers | 10 | Lansman öncesi zorunlu kernel + dürüst docs |
+| Wave 2: Prove it + supply chain | 12 | DST, adapter, CI, supply chain |
+| Wave 3: Post-announcement roadmap | 12 | Düşük öncelik + mevcut keşif issue'ları |
+
+**Yeni label'lar:** priority/critical|high|medium|low, area/kernel|adapters|lenses|cli|dst|docs|ci, pre-announcement
+
+---
+
+**Wave 1 — Lansman blocker'ları (10 issue)**
+| **#** | **Öncelik** | **Konu** |
+| ------- | ----------- | --------- |
+| #13 | P0 | Foreign file açılınca sessiz truncate — WAL magic header |
+| #16 | P0 | Foreign file açılınca sessiz truncate — WAL magic header |
+| #19 | P1 | Async transact() sessiz kabul |
+| #21 | P1 | Append/fsync failure → poisoned WAL (fsyncgate) |
+| #14 | P1 | Double-open koruması |
+| #17 | P1 | Buffer aliasing / defensive copy |
+| #17 | P1 | getRange + delete-while-scan |
+| #20 | P1 | : içeren collection/table adları |
+| #22 | P1 | Mid-log corruption → refuse, torn-tail ayrımı |
+| #15 | P1 | Parent dir fsync + truncate fsync |
+| #18 | P2 | README/RELIABILITY iddialarını düzelt |
+
+---
+
+**Wave 2 — Kanıtla + supply chain (12 issue)**
+
+| **Issue** | **Konu** |
+| ------- | --------- |
+| #23 | OPFS read loop + short-read recovery |
+| #25 | DST IO-error fault injection |
+| #29 | DST binary/large payload fuzz |
+| #26 | NaN/Infinity column validation |
+| #30 | doc() on relational table guard |
+| #33 | CLI lock ownership |
+| #7  | npm provenance (mevcut) |
+| #24 | JSR CLI pin |
+| #27 | Dependabot |
+| #32 | Node 22 CI smoke |
+| #34 | Performance envelope docs |
+| #10 | OPFS browser E2E (mevcut) |
+
+---
+
+**Wave 3 — Roadmap (12 issue)**
+Yeni: #28–#42 (typed errors, close-during-tx, surrogate keys, find(undefined), CLI escape injection, node-fs read optimizasyonu, OPFS flush docs, Docker nonroot, publish tag check, backup docs)
+
+Mevcut: #9 (group-commit araştırması), #12 (WAL compaction)
