@@ -76,7 +76,11 @@ test("committed writes survive a simulated crash (no graceful close)", () => {
   crashed.transact((tx) => tx.set(bytes(1), bytes(10)));
   crashed.transact((tx) => tx.set(bytes(2), bytes(20)));
   // Simulate a crash: the process dies without ever calling close(). Because
-  // each commit fsync'd before returning, the data is already durable.
+  // each commit fsync'd before returning, the data is already durable. In a
+  // real crash the holder's pid would be dead and the lock auto-reclaimed;
+  // in-process the "crashed" handle is still this live pid, so drop the lock
+  // by hand to complete the simulation.
+  rmSync(`${path}.lock`);
 
   const recovered = open({ path });
   expect(dump(recovered)).toEqual([

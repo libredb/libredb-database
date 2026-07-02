@@ -13,8 +13,8 @@
 import { open as openKernel, type Open } from "./core.ts";
 import { nodeFileSystem } from "./adapter/node-fs.ts";
 
-export { version } from "./core.ts";
-export type { Database, FileSystem, OpenOptions, WalFile } from "./core.ts";
+export { version, LibreDbError } from "./core.ts";
+export type { Database, ErrorCode, FileSystem, OpenOptions, RecoveryInfo, WalFile } from "./core.ts";
 
 /**
  * Open a LibreDB database on Node or Bun. Identical to the kernel's

@@ -9,17 +9,18 @@
  * This is open-edge tooling over the public API, not kernel code: it adds no
  * durability logic. Read commands (inspect/stats/get/scan) open through the
  * read-only filesystem adapter so inspecting a file never mutates it. Write
- * commands (set/delete/import) take an advisory lock first, and import commits
- * all keys in one transaction so a bulk load is atomic.
+ * commands (set/delete/import) rely on the kernel's exclusive open lock (a
+ * second writer fails loudly; --force clears a lock whose holder is gone), and
+ * import commits all keys in one transaction so a bulk load is atomic.
  */
 import { readFileSync, statSync } from "node:fs";
 import { parseArgs } from "node:util";
 
-import type { Database } from "../core.ts";
+import { forceUnlock } from "../adapter/node-fs.ts";
+import { LibreDbError, type Database } from "../core.ts";
 import { open } from "../index.ts";
 import { catalog, isReservedKey } from "../lens/catalog.ts";
 import { kv } from "../lens/kv.ts";
-import { acquireLock } from "./lock.ts";
 import { readonlyFileSystem } from "./readonly-fs.ts";
 
 /** Where the CLI writes its output. One call is one line; the sink adds newlines. */
@@ -53,7 +54,7 @@ const USAGE = [
   "  libredb import <path> <file.json>  Bulk-set keys from a JSON object (one atomic commit)",
   "",
   "Options:",
-  "  --force                            Override an existing write lock",
+  "  --force                            Remove a write lock whose holder is no longer alive",
 ].join("\n");
 
 /** Open `path` read-only, run `fn`, and always close — so a read leaves the file
@@ -67,19 +68,23 @@ const withReadDb = <T>(path: string, fn: (db: Database) => T): T => {
   }
 };
 
-/** Take the advisory lock, open `path` for writing, run `fn`, then always close
- * and release — so a crash mid-write cannot leave the lock stranded. */
+/** Open `path` for writing (the kernel takes the exclusive lock), run `fn`,
+ * then always close — which releases the lock. With `force`, a LOCKED open
+ * removes the lock first when its holder is not verifiably alive; a live
+ * holder still refuses, so --force cannot create two live writers. */
 const withWriteDb = <T>(path: string, force: boolean, fn: (db: Database) => T): T => {
-  const lock = acquireLock(path, force);
+  let db: Database;
   try {
-    const db = open({ path });
-    try {
-      return fn(db);
-    } finally {
-      db.close();
-    }
+    db = open({ path });
+  } catch (error) {
+    if (!force || !(error instanceof LibreDbError) || error.code !== "LOCKED") throw error;
+    forceUnlock(path);
+    db = open({ path });
+  }
+  try {
+    return fn(db);
   } finally {
-    lock.release();
+    db.close();
   }
 };
 

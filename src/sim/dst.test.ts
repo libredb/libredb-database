@@ -96,28 +96,30 @@ test("a torn in-flight append is discarded; committed state survives the crash",
   expect([...recovered.keys()].sort()).toEqual(["k1", "k2"]);
 });
 
-// --- explicit CRC-corruption case ---
+// --- explicit corruption cases ---
 
-test("corruption of the first record drops the whole log on recovery", () => {
+/** The byte offset where records start: past the 8-byte file header. */
+const RECORDS_BASE = 8;
+
+test("a corrupted length field on the final record is indistinguishable from a torn tail and truncates", () => {
   const fs = new SimFS(3);
-  const steps: WorkloadStep[] = [
-    { ops: [{ kind: "set", key: "k0", value: "a" }], abort: false },
-    { ops: [{ kind: "set", key: "k1", value: "b" }], abort: false },
-    { ops: [{ kind: "set", key: "k2", value: "c" }], abort: false },
-  ];
+  const steps: WorkloadStep[] = [{ ops: [{ kind: "set", key: "k0", value: "a" }], abort: false }];
   const db = open({ path: WAL, fs });
   runWorkload(db, steps);
 
-  // Flip a byte inside the FIRST record's payload (offset 8 = just past its
-  // 8-byte header). Its checksum then fails, so recovery stops at record 0.
-  fs.corrupt(WAL, 8);
+  // Flip a byte in the LAST record's length field. The promised end then lies
+  // beyond the file, which is byte-for-byte what a torn tail looks like —
+  // format v1 has no per-record header to tell them apart (see DESIGN.md), so
+  // recovery truncates from that record on. Every record before it survives;
+  // here there are none, so the store recovers empty.
+  fs.corrupt(WAL, RECORDS_BASE);
 
   const recovered = dump(open({ path: WAL, fs }));
-  expect(recovered.size).toBe(0); // nothing before the first record to keep
+  expect(recovered.size).toBe(0);
   expect(isCommittedPrefix(recovered, committedPrefixStates(steps))).toBe(true);
 });
 
-test("corruption mid-log keeps the valid prefix and drops the rest", () => {
+test("mid-log payload corruption refuses to open instead of truncating committed data", () => {
   const fs = new SimFS(5);
   const steps: WorkloadStep[] = [
     { ops: [{ kind: "set", key: "k0", value: "a" }], abort: false },
@@ -127,38 +129,45 @@ test("corruption mid-log keeps the valid prefix and drops the rest", () => {
   const db = open({ path: WAL, fs });
   runWorkload(db, steps);
 
-  // Corrupt a byte inside the SECOND record's payload. Record 0 has payload
-  // length len0 (header at 0, payload at 8); record 1's header starts at
-  // 8 + len0 and its payload at (8 + len0) + 8. Same-shape rows => same size.
+  // Corrupt a byte inside the SECOND record's payload: record 0 spans
+  // [RECORDS_BASE, RECORDS_BASE+8+len0); record 1's payload starts 8 bytes
+  // after that. Its CRC then fails while INTACT data (record 2) sits after it
+  // — that is not a crash artifact (only the final append can tear), it is
+  // damage to once-durable bytes. Truncating would destroy record 2's
+  // committed transaction, so recovery must refuse the open and leave every
+  // byte in place.
   const durable = fs.durableBytes(WAL);
-  const len0 = readU32(durable, 0);
-  fs.corrupt(WAL, 8 + len0 + 8);
+  const len0 = readU32(durable, RECORDS_BASE);
+  const before = fs.durableBytes(WAL);
+  fs.corrupt(WAL, RECORDS_BASE + 8 + len0 + 8);
 
-  const recovered = dump(open({ path: WAL, fs }));
-  // Record 0 survives; record 1 (corrupt) and everything after are dropped.
-  expect(mapEqual(recovered, new Map([["k0", "a"]]))).toBe(true);
-  expect(isCommittedPrefix(recovered, committedPrefixStates(steps))).toBe(true);
+  expect(() => open({ path: WAL, fs })).toThrow(/corrupt/i);
+  // Refuse means refuse: the file was not truncated or rewritten (only the
+  // one deliberately-flipped byte differs).
+  const after = fs.durableBytes(WAL);
+  expect(after.length).toBe(before.length);
 });
 
 // --- explicit short-read case ---
 
-test("a short read during recovery still lands on a valid committed prefix", () => {
+test("a short read during recovery is an IO fault, not license to truncate committed data", () => {
   const fs = new SimFS(11);
   const steps = generateWorkload(11);
   const db = open({ path: WAL, fs });
   runWorkload(db, steps);
 
   // The next read (recovery's single read of the whole log) returns a seeded
-  // short prefix. Recovery must not fabricate state from the truncated bytes.
+  // short prefix of bytes the file actually holds. Treating that as a torn
+  // tail would truncate fsync'd commits over a transient fault, so recovery
+  // must fail loudly instead — and leave the file untouched for a retry.
+  const before = fs.durableBytes(WAL);
   fs.armShortRead();
-  const recovered = dump(open({ path: WAL, fs }));
+  expect(() => open({ path: WAL, fs })).toThrow(/read returned/i);
+  expect(fs.durableBytes(WAL).length).toBe(before.length);
 
-  // A short read may lose a SUFFIX of committed records, but the result is
-  // still a valid committed prefix — never a torn or fabricated state. (It can
-  // even hold MORE keys than the final model if later deletes were cut off, so
-  // the only honest assertion is prefix membership.)
-  const states = committedPrefixStates(steps);
-  expect(isCommittedPrefix(recovered, states)).toBe(true);
+  // The fault was transient: the very next open succeeds with the full model.
+  const recovered = dump(open({ path: WAL, fs }));
+  expect(mapEqual(recovered, modelAfter(steps))).toBe(true);
 });
 
 // --- the oracle helpers themselves ---

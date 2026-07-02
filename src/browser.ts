@@ -13,7 +13,8 @@
  */
 import { open as openKernel, type Database, type FileSystem } from "./core.ts";
 
-export { version } from "./core.ts";
+export { version, LibreDbError } from "./core.ts";
+export type { ErrorCode, RecoveryInfo } from "./core.ts";
 // OpenOptions (the kernel's permissive type, fs optional) is intentionally NOT
 // re-exported here: the browser `open` is typed with BrowserOpenOptions, where fs
 // is required alongside a path, so exposing OpenOptions would advertise a
