@@ -90,13 +90,14 @@ export interface SeedResult {
  * fsync, so the next {@link SimFS.crash} can tear it. The header promises 0xffff
  * payload bytes but only three are provided, so however the crash tears it the
  * record can never recover to a valid frame — exactly a commit interrupted by
- * power loss before its fsync. Recovery must always discard it.
+ * power loss before its fsync. Recovery must always discard it. Exported so
+ * the test suite can compose it into multi-cycle crash schedules.
  *
  * Synchronous append+fsync means the kernel itself can never leave un-fsync'd
  * bytes between commits, so injecting this partial write is the honest way to
  * reproduce the one moment a crash can damage an append-only log: mid-record.
  */
-function injectTornTail(fs: SimFS): void {
+export function injectTornTail(fs: SimFS): void {
   fs.open(WAL_PATH).append(Uint8Array.from([0, 0, 0xff, 0xff, 0, 0, 0, 0, 1, 2, 3]));
 }
 

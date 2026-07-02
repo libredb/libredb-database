@@ -57,6 +57,17 @@ maps onto an OPFS **sync access handle** (whose `read`/`write`/`getSize`/
 with no async core. Sync access handles are only available **inside a dedicated
 Web Worker**, so durable LibreDB *must* live in a Worker.
 
+One honest caveat on the word *durable*: the kernel's durability point maps to
+the handle's `flush()`, and the OPFS specification does not promise that
+`flush()` carries POSIX-`fsync` strength against **power loss** — the browser's
+storage layer decides when bytes reach stable media. In practice a committed
+write survives a tab crash, a page reload, and a browser restart; what a sudden
+power cut can lose is browser-and-OS dependent. Treat OPFS durability as "as
+strong as the browser's flush", not as a battery-backed guarantee (verifying
+this per engine is tracked in
+[#10](https://github.com/libredb/libredb/issues/10)). Storage may also be
+evicted under pressure unless you request persistence — see the checklist below.
+
 ---
 
 ## 3. In-memory: the 30-second start (main thread)

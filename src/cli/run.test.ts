@@ -7,16 +7,16 @@
  * stats, get, scan) against real .libredb files, plus usage and error handling.
  */
 import { appendFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, expect, test } from "bun:test";
 
+import { LOCK_SENTINEL } from "../adapter/node-fs.ts";
 import { open } from "../index.ts";
 import { doc } from "../lens/document.ts";
 import { kv } from "../lens/kv.ts";
 import { table } from "../lens/relational.ts";
-import { acquireLock } from "./lock.ts";
 import { run } from "./run.ts";
 
 const dirs: string[] = [];
@@ -242,20 +242,51 @@ test("import rejects malformed JSON as a usage error (exit 2)", () => {
   expect(r.err.join("\n")).toMatch(/json/i);
 });
 
-test("a write refuses when the database is locked", () => {
+/** A lock file naming a live holder: this very test process. */
+const liveLock = (): string => `${LOCK_SENTINEL}\n${process.pid}\n${hostname()}\nnonce\n`;
+
+test("a write refuses when a live writer holds the lock", () => {
   const path = fixture();
-  writeFileSync(`${path}.lock`, ""); // another writer holds the lock
+  writeFileSync(`${path}.lock`, liveLock()); // a live holder (this process)
   const r = cli("set", path, "k", "v");
   expect(r.code).toBe(1);
   expect(r.err.join("\n")).toMatch(/locked/i);
 });
 
-test("--force overrides a stale libredb lock", () => {
+test("a stale lock (dead holder) is reclaimed automatically, no --force needed", () => {
   const path = fixture();
-  acquireLock(path, false); // a prior writer's lock, left behind (e.g. it crashed)
+  // A crashed writer's leftover: an empty lock file carries no live holder.
+  writeFileSync(`${path}.lock`, "");
+  const r = cli("set", path, "k", "v");
+  expect(r.code).toBe(0);
+  expect(cli("get", path, "k").out).toEqual(["v"]);
+  expect(existsSync(`${path}.lock`)).toBe(false);
+});
+
+test("--force refuses to remove a live holder's lock", () => {
+  const path = fixture();
+  writeFileSync(`${path}.lock`, liveLock());
+  const r = cli("set", path, "k", "v", "--force");
+  expect(r.code).toBe(1);
+  expect(r.err.join("\n")).toMatch(/alive/i);
+});
+
+test("--force removes a lock from another host (liveness unverifiable)", () => {
+  const path = fixture();
+  writeFileSync(`${path}.lock`, `${LOCK_SENTINEL}\n99999\nsome-other-host\nnonce\n`);
+  expect(cli("set", path, "k", "v").code).toBe(1); // without --force: locked
   const r = cli("set", path, "k", "v", "--force");
   expect(r.code).toBe(0);
   expect(cli("get", path, "k").out).toEqual(["v"]);
+});
+
+test("--force refuses to delete a file that is not a libredb lock", () => {
+  const path = fixture();
+  writeFileSync(`${path}.lock`, "this is the user's own data, not a lock");
+  const r = cli("set", path, "k", "v", "--force");
+  expect(r.code).toBe(1);
+  expect(r.err.join("\n")).toMatch(/not a libredb lock/i);
+  expect(existsSync(`${path}.lock`)).toBe(true); // the user's file is intact
 });
 
 test("set refuses to write a reserved key", () => {
@@ -276,6 +307,23 @@ test("import refuses a reserved key so it cannot corrupt the catalog", () => {
   const r = cli("import", path, file);
   expect(r.code).toBe(2);
   expect(r.err.join("\n")).toMatch(/reserved key/i);
+});
+
+test("get and scan escape control characters so stored data cannot drive the terminal", () => {
+  const path = fixture();
+  cli("set", path, "evil", "\u001b[2Jcleared\u0007bell");
+  const got = cli("get", path, "evil");
+  expect(got.code).toBe(0);
+  expect(got.out).toEqual(["\\x1b[2Jcleared\\x07bell"]); // no raw ESC/BEL reaches the sink
+  const scanned = cli("scan", path, "evil");
+  expect(scanned.out).toEqual(["evil=\\x1b[2Jcleared\\x07bell"]);
+});
+
+test("--raw prints the stored bytes verbatim for callers that want them", () => {
+  const path = fixture();
+  cli("set", path, "evil", "\u001b[31mred");
+  const r = cli("get", path, "evil", "--raw");
+  expect(r.out).toEqual(["\u001b[31mred"]);
 });
 
 test("a read recovers a crash-torn file in memory without changing the bytes on disk", () => {

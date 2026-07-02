@@ -6,7 +6,7 @@ import { join } from "node:path";
 // Persistence cases use a real path, so open through the Node entry (which
 // defaults the node:fs adapter); the kernel carries no default filesystem.
 import { open } from "../index.ts";
-import { doc, type Doc } from "./document.ts";
+import { collectionHandle, type Doc } from "./document.ts";
 import { table, type TableSchema, type Row } from "./relational.ts";
 
 // A schema exercising every column type, so type validation is checked across
@@ -64,7 +64,8 @@ describe("relational insert-time row validation", () => {
     // the document storage scheme rather than inventing a parallel one.
     const db = open();
     table(db, "users", userSchema).insert(validUser);
-    expect(doc(db, "users").get("u1")).toEqual(validUser as unknown as Doc);
+    // collectionHandle: doc() itself now refuses relational names (issue #30).
+    expect(collectionHandle(db, "users").get("u1")).toEqual(validUser as unknown as Doc);
   });
 
   test("rejects a row missing a declared column", () => {
@@ -476,7 +477,7 @@ describe("relational insert durability", () => {
     db.close();
 
     const reopened = open({ path });
-    expect(doc(reopened, "users").get("u1")).toEqual(validUser as unknown as Doc);
+    expect(collectionHandle(reopened, "users").get("u1")).toEqual(validUser as unknown as Doc);
     reopened.close();
   });
 });

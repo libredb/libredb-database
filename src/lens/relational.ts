@@ -23,7 +23,7 @@
  * equi-join via nested loop, producing rows with columns qualified as
  * `table.column`). The kernel is unchanged.
  */
-import { doc, matches, type Doc } from "./document.ts";
+import { assertDefinedPredicate, collectionHandle, matches, type Doc } from "./document.ts";
 import { assertUserName, recordRelational } from "./catalog.ts";
 import { result, type Result, type WriteResult } from "./types.ts";
 import type { Store } from "../adapter/store.ts";
@@ -62,7 +62,10 @@ function matchesType(value: string | number | boolean | object, type: ColumnType
     case "string":
       return typeof value === "string";
     case "number":
-      return typeof value === "number";
+      // NaN and Infinity pass `typeof` but JSON cannot represent them —
+      // JSON.stringify writes null, so the value would round-trip as a
+      // schema-violating null. Only finite numbers are numbers here.
+      return typeof value === "number" && Number.isFinite(value);
     case "boolean":
       return typeof value === "boolean";
     case "object":
@@ -226,6 +229,9 @@ function query(name: string, source: () => Iterable<Row>): Query {
       return base.toArray();
     },
     where(predicate) {
+      // Same eager validation as the document lens's find(): an undefined
+      // predicate value would silently invert to "rows missing the column".
+      assertDefinedPredicate(predicate as unknown as Doc);
       return query(name, () => base.toArray().filter((row) => rowMatches(row, predicate)));
     },
     select(...columns) {
@@ -316,7 +322,9 @@ export function table(store: Store, name: string, schema: TableSchema): Table {
   // a row is a Doc whose fields happen to be the declared columns. The Row/Doc
   // casts are type-system artifacts (their value unions overlap but neither is a
   // subtype of the other); validation guarantees what crosses the boundary.
-  const rows = doc(store, name);
+  // collectionHandle, not doc(): doc() refuses relational names to protect
+  // OUTSIDE callers from writing around the schema — this lens IS the schema.
+  const rows = collectionHandle(store, name);
 
   // Every read starts from the full table scan re-wrapped as a chainable Query:
   // drop the document lens's DocEntry id wrapper (the pk lives in the row), then

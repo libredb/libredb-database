@@ -25,6 +25,7 @@ import { SimFS } from "./simfs.ts";
 import {
   committedPrefixStates,
   describeFailure,
+  injectTornTail,
   isCommittedPrefix,
   mapEqual,
   runSeed,
@@ -96,28 +97,30 @@ test("a torn in-flight append is discarded; committed state survives the crash",
   expect([...recovered.keys()].sort()).toEqual(["k1", "k2"]);
 });
 
-// --- explicit CRC-corruption case ---
+// --- explicit corruption cases ---
 
-test("corruption of the first record drops the whole log on recovery", () => {
+/** The byte offset where records start: past the 8-byte file header. */
+const RECORDS_BASE = 8;
+
+test("a corrupted length field refuses to open instead of masquerading as a torn tail", () => {
   const fs = new SimFS(3);
-  const steps: WorkloadStep[] = [
-    { ops: [{ kind: "set", key: "k0", value: "a" }], abort: false },
-    { ops: [{ kind: "set", key: "k1", value: "b" }], abort: false },
-    { ops: [{ kind: "set", key: "k2", value: "c" }], abort: false },
-  ];
+  const steps: WorkloadStep[] = [{ ops: [{ kind: "set", key: "k0", value: "a" }], abort: false }];
   const db = open({ path: WAL, fs });
   runWorkload(db, steps);
 
-  // Flip a byte inside the FIRST record's payload (offset 8 = just past its
-  // 8-byte header). Its checksum then fails, so recovery stops at record 0.
-  fs.corrupt(WAL, 8);
+  // Flip a byte in a record's length field. In format v1 the record header
+  // carries a checksum of its own length field, precisely so this damage is
+  // NOT mistaken for a torn tail (a tear cuts bytes off the end; it cannot
+  // rewrite header bytes that were already written). Recovery must refuse the
+  // open and leave every byte in place.
+  const before = fs.durableBytes(WAL);
+  fs.corrupt(WAL, RECORDS_BASE);
 
-  const recovered = dump(open({ path: WAL, fs }));
-  expect(recovered.size).toBe(0); // nothing before the first record to keep
-  expect(isCommittedPrefix(recovered, committedPrefixStates(steps))).toBe(true);
+  expect(() => open({ path: WAL, fs })).toThrow(/corrupt WAL record header/i);
+  expect(fs.durableBytes(WAL).length).toBe(before.length);
 });
 
-test("corruption mid-log keeps the valid prefix and drops the rest", () => {
+test("mid-log payload corruption refuses to open instead of truncating committed data", () => {
   const fs = new SimFS(5);
   const steps: WorkloadStep[] = [
     { ops: [{ kind: "set", key: "k0", value: "a" }], abort: false },
@@ -127,38 +130,130 @@ test("corruption mid-log keeps the valid prefix and drops the rest", () => {
   const db = open({ path: WAL, fs });
   runWorkload(db, steps);
 
-  // Corrupt a byte inside the SECOND record's payload. Record 0 has payload
-  // length len0 (header at 0, payload at 8); record 1's header starts at
-  // 8 + len0 and its payload at (8 + len0) + 8. Same-shape rows => same size.
+  // Corrupt a byte inside the SECOND record's payload: record 0 spans
+  // [RECORDS_BASE, RECORDS_BASE+8+len0); record 1's payload starts 8 bytes
+  // after that. Its CRC then fails while INTACT data (record 2) sits after it
+  // — that is not a crash artifact (only the final append can tear), it is
+  // damage to once-durable bytes. Truncating would destroy record 2's
+  // committed transaction, so recovery must refuse the open and leave every
+  // byte in place.
   const durable = fs.durableBytes(WAL);
-  const len0 = readU32(durable, 0);
-  fs.corrupt(WAL, 8 + len0 + 8);
+  const len0 = readU32(durable, RECORDS_BASE);
+  const before = fs.durableBytes(WAL);
+  fs.corrupt(WAL, RECORDS_BASE + 8 + len0 + 8);
 
-  const recovered = dump(open({ path: WAL, fs }));
-  // Record 0 survives; record 1 (corrupt) and everything after are dropped.
-  expect(mapEqual(recovered, new Map([["k0", "a"]]))).toBe(true);
-  expect(isCommittedPrefix(recovered, committedPrefixStates(steps))).toBe(true);
+  expect(() => open({ path: WAL, fs })).toThrow(/corrupt/i);
+  // Refuse means refuse: the file was not truncated or rewritten (only the
+  // one deliberately-flipped byte differs).
+  const after = fs.durableBytes(WAL);
+  expect(after.length).toBe(before.length);
 });
 
 // --- explicit short-read case ---
 
-test("a short read during recovery still lands on a valid committed prefix", () => {
+test("a short read during recovery is an IO fault, not license to truncate committed data", () => {
   const fs = new SimFS(11);
   const steps = generateWorkload(11);
   const db = open({ path: WAL, fs });
   runWorkload(db, steps);
 
   // The next read (recovery's single read of the whole log) returns a seeded
-  // short prefix. Recovery must not fabricate state from the truncated bytes.
+  // short prefix of bytes the file actually holds. Treating that as a torn
+  // tail would truncate fsync'd commits over a transient fault, so recovery
+  // must fail loudly instead — and leave the file untouched for a retry.
+  const before = fs.durableBytes(WAL);
   fs.armShortRead();
-  const recovered = dump(open({ path: WAL, fs }));
+  expect(() => open({ path: WAL, fs })).toThrow(/read returned/i);
+  expect(fs.durableBytes(WAL).length).toBe(before.length);
 
-  // A short read may lose a SUFFIX of committed records, but the result is
-  // still a valid committed prefix — never a torn or fabricated state. (It can
-  // even hold MORE keys than the final model if later deletes were cut off, so
-  // the only honest assertion is prefix membership.)
-  const states = committedPrefixStates(steps);
-  expect(isCommittedPrefix(recovered, states)).toBe(true);
+  // The fault was transient: the very next open succeeds with the full model.
+  const recovered = dump(open({ path: WAL, fs }));
+  expect(mapEqual(recovered, modelAfter(steps))).toBe(true);
+});
+
+// --- IO-error fault profiles (audit B3 / issue #25) ---
+
+const utf8 = new TextEncoder();
+
+/** Apply `steps`' committed effects onto `model`, accumulating across cycles
+ * (modelAfter starts from empty; multi-cycle runs need the running total). */
+function applySteps(model: Map<string, string>, steps: readonly WorkloadStep[]): void {
+  for (const step of steps) {
+    if (step.abort) continue;
+    for (const op of step.ops) {
+      if (op.kind === "set") model.set(op.key, op.value);
+      else model.delete(op.key);
+    }
+  }
+}
+
+test("a partial-append fault latches the database and never destroys acknowledged commits", () => {
+  for (let seed = 0; seed < 10; seed++) {
+    const fs = new SimFS(seed);
+    const db = open({ path: WAL, fs });
+    const steps = generateWorkload(seed, { steps: 30, abortRate: 0 });
+    runWorkload(db, steps);
+    const expected = modelAfter(steps);
+
+    // The next commit's append persists only a torn prefix, then throws.
+    fs.armAppendError();
+    expect(() => db.transact((tx) => tx.set(utf8.encode("doomed"), utf8.encode("x")))).toThrow(/ENOSPC/);
+    // Error-then-continue: the database refuses further work (the latch) —
+    // appending after the torn bytes would poison every later commit.
+    expect(() => db.transact((tx) => tx.set(utf8.encode("later"), utf8.encode("y")))).toThrow(/reopen/);
+
+    // Crash, reopen: every acknowledged commit survives; the doomed one never
+    // appears (its record is torn by construction).
+    fs.crash();
+    const recovered = dump(open({ path: WAL, fs }));
+    expect(mapEqual(recovered, expected)).toBe(true);
+  }
+});
+
+test("a failed fsync latches the database; recovery lands on acknowledged state, at most plus the unacknowledged tail", () => {
+  for (let seed = 0; seed < 10; seed++) {
+    const fs = new SimFS(seed);
+    const db = open({ path: WAL, fs });
+    const steps = generateWorkload(seed, { steps: 30, abortRate: 0 });
+    runWorkload(db, steps);
+    const expected = modelAfter(steps);
+
+    fs.armFsyncError();
+    expect(() => db.transact((tx) => tx.set(utf8.encode("doomed"), utf8.encode("x")))).toThrow(/EIO/);
+    expect(() => db.transact((tx) => tx.set(utf8.encode("later"), utf8.encode("y")))).toThrow(/reopen/);
+
+    // The doomed commit's bytes were fully appended but never fsync'd: a crash
+    // may keep any prefix of them. The honest durability contract is a LOWER
+    // bound — every acknowledged commit survives; the unacknowledged commit MAY
+    // also survive if its whole record reached the disk (the same contract real
+    // databases have for an errored commit).
+    fs.crash();
+    const recovered = dump(open({ path: WAL, fs }));
+    const withDoomed = new Map(expected);
+    withDoomed.set("doomed", "x");
+    expect(mapEqual(recovered, expected) || mapEqual(recovered, withDoomed)).toBe(true);
+  }
+});
+
+test("crash-recover-write cycles preserve every acknowledged commit across generations", () => {
+  for (let seed = 100; seed < 105; seed++) {
+    const fs = new SimFS(seed);
+    const cumulative = new Map<string, string>();
+    for (let cycle = 0; cycle < 5; cycle++) {
+      const db = open({ path: WAL, fs });
+      // The durability lower bound: everything committed in EVERY earlier
+      // cycle is still here, exactly.
+      expect(mapEqual(dump(db), cumulative)).toBe(true);
+      const steps = generateWorkload(seed * 31 + cycle, { steps: 20 });
+      runWorkload(db, steps);
+      applySteps(cumulative, steps);
+      // Crash without closing, sometimes with a torn in-flight append first.
+      if (cycle % 2 === 0) injectTornTail(fs);
+      fs.crash();
+    }
+    const recovered = dump(open({ path: WAL, fs }));
+    expect(mapEqual(recovered, cumulative)).toBe(true);
+  }
 });
 
 // --- the oracle helpers themselves ---

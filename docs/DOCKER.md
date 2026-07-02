@@ -108,6 +108,14 @@ docker buildx build --platform linux/amd64,linux/arm64 -t libredb .
   any two writers — one wins, the other is refused. LibreDB is single-process.
 - **Same files everywhere.** A `.libredb` file is byte-identical across the library,
   the `npx` CLI, the [standalone binary](./BINARY.md), and this image.
-- **Permissions:** files the container writes are owned by the container's user;
-  if that's a problem on Linux, add `--user "$(id -u):$(id -g)"` to the
-  `docker run`.
+- **Permissions:** the image runs as a non-root user (uid 65532, distroless
+  `:nonroot`) so a container escape holds no root and written files are never
+  root-owned. The flip side: **writes into a bind-mounted directory fail unless
+  that directory is writable by uid 65532** — either make it so, or (usually
+  better) run with your own identity so created files are yours:
+
+  ```sh
+  docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/data" ghcr.io/libredb/libredb set /data/app.libredb k v
+  ```
+
+  Read commands need only read access and work either way.
