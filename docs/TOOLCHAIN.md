@@ -1,7 +1,7 @@
 # LibreDB Toolchain - 2026 Decision Record
 
-> Status: implemented (local phases done and committed; the committed CI workflows activate automatically
-> once the repo is on GitHub). Captures the per-tool decisions from a researched-then-adversarially-verified evaluation of
+> Status: implemented and live (local phases done and committed; the repo is on GitHub and the CI,
+> SonarCloud, and publish workflows are active). Captures the per-tool decisions from a researched-then-adversarially-verified evaluation of
 > 2026 gold-standard OSS-TypeScript tooling, judged against LibreDB's manifesto and `DESIGN.md`. Every
 > adopted tool plugs into `bun run gate` or a documented CI phase.
 
@@ -41,10 +41,10 @@ errors in the first-pass research; the corrections are baked into the configs be
 | Release | ADOPT | `@changesets/cli` | Human-curated changelog; local now, CI later |
 | License hygiene | ADOPT | `license-checker-rseidelsohn` | Dev-only allowlist; fails on non-permissive deps |
 | Security (local) | ADOPT | `bun audit` + `secretlint` | Dependency audit + secret scan at the edge (npm-native) |
-| Security (CI) | DEFER-TO-CI | CodeQL, Scorecard, provenance, osv-scanner, dependency-review | Need GitHub Actions |
-| Dependency updates | DEFER-TO-CI | Renovate (or Dependabot) | Need GitHub; `bun outdated` is the manual local stand-in |
-| Code quality (CI) | DEFER-TO-CI (prepared) | SonarCloud | Cloud SAST + coverage; workflow committed, inert until SONAR_TOKEN |
-| CI gate | DEFER-TO-CI (prepared) | GitHub Actions | Mirrors `bun run gate`; workflow committed, activates on push |
+| Security (CI) | PARTLY ADOPTED | npm provenance (live in publish.yml); CodeQL, Scorecard, osv-scanner, dependency-review still deferred | Provenance ships with every release |
+| Dependency updates | ADOPT (CI) | Dependabot | `.github/dependabot.yml`: weekly actions/docker/npm update PRs, devDependencies grouped |
+| Code quality (CI) | ADOPT (live) | SonarCloud | Cloud SAST + coverage; analysis runs on every push/PR, quality-gate and coverage badges in the README |
+| CI gate | ADOPT (live) | GitHub Actions | Mirrors `bun run gate` on every push/PR, plus a Node 22 smoke job |
 
 ## Cross-cutting integration realities (verifier-surfaced)
 
@@ -144,7 +144,7 @@ export default tseslint.config(
 Scripts: `"format": "biome format src eslint.config.js"`, `"format:fix": "biome format --write src eslint.config.js"`, `"lint": "oxlint && eslint ."`. A `biome.json` enables the formatter only (`linter` and `assist` disabled).
 Remove `@eslint/js` from devDependencies.
 
-Packages: `oxlint@^1.71`, `@biomejs/biome@^2.5` (formatter only), `typescript-eslint@^8.62`, `eslint@^10.5`.
+Packages: `oxlint@^1.71`, `@biomejs/biome@^2.5` (formatter only), `typescript-eslint@^8.0`, `eslint@^10.0`.
 
 ### Packaging correctness: attw + publint
 
@@ -174,10 +174,11 @@ import-time side effects, so this lets consumer bundlers tree-shake unused expor
 
 The runtime analog of the line-count discipline: a checked-in byte ceiling on the shipped public entry.
 size-limit bundles + treeshakes + minifies + brotli-compresses exactly as a consumer's bundler would and
-exits non-zero on regression. As implemented, the public entry measures **2.83 kB** (min+brotli, all
-deps); the budget is set to **4 kB** - meaningful headroom for active development while still catching a
-real regression (an accidental heavy dep or a non-treeshakeable import). Raising the limit must be a
-conscious edit, the same discipline as the core LOC budget.
+exits non-zero on regression. As implemented, the public entry measures **5.08 kB** (min+brotli, all
+deps) against a **6 kB** budget, and the browser entry measures **4.24 kB** against a **5 kB** budget -
+meaningful headroom for active development while still catching a real regression (an accidental heavy
+dep or a non-treeshakeable import). Raising the limit must be a conscious edit, the same discipline as
+the core LOC budget.
 
 ```jsonc
 // .size-limit.json
@@ -186,10 +187,15 @@ conscious edit, the same discipline as the core LOC budget.
     "name": "public entry (min+brotli)",
     "path": "dist/index.js",
     // node builtins are runtime-provided, not shipped; esbuild must not try to
-    // bundle them. Only node:fs is in the shipped graph today; os/path are
-    // listed defensively.
-    "ignore": ["node:fs", "node:os", "node:path"],
-    "limit": "4 kB"
+    // bundle them. The shipped graph now reaches node:crypto, node:fs, node:os,
+    // and node:path (fd-based I/O plus the lock file's pid/host/nonce).
+    "ignore": ["node:crypto", "node:fs", "node:os", "node:path"],
+    "limit": "6 kB"
+  },
+  {
+    "name": "browser entry (min+brotli)",
+    "path": "dist/browser.js",
+    "limit": "5 kB"
   }
 ]
 ```
@@ -317,7 +323,8 @@ lefthook is the documented upgrade path if parallelism / staged-file scoping is 
 
 `@changesets/cli@^2.31`, run locally. `changeset init` config (`.changeset/config.json`), adjusted to
 `access: public` (the package is public; init defaults to `restricted`) and the built-in
-`@changesets/cli/changelog` (no GitHub-changelog dependency while the repo is private). `$schema` pins
+`@changesets/cli/changelog` (no GitHub-changelog dependency; chosen while the repo was still private and
+kept now that it is public, for the minimal dependency surface). `$schema` pins
 `@changesets/config@3.1.4`. Scripts: `"changeset"` (write an intent file) and `"changeset:version"`
 (`changeset version` + `bun run sync-version` - bump package.json + write CHANGELOG.md, then sync the
 exported `version`). There is deliberately NO `changeset publish` script: publishing is done by
@@ -363,44 +370,51 @@ coverage path exists.
 
 ## Defer to CI (document now, apply when the repo is on GitHub)
 
-These need GitHub Actions. The workflow files are now PREPARED but inert until the repo is on GitHub
-(and, for SonarCloud, until a secret is set). What is committed now:
+These need GitHub Actions. The repo is on GitHub and all three workflows are live: `ci.yml` and
+`sonarcloud.yml` run on every push and PR, and `publish.yml` runs on published GitHub Releases. What is
+committed:
 
-Both workflows are hardened the way CodeQL's actions queries and OpenSSF Scorecard expect: every action is
+All three workflows are hardened the way CodeQL's actions queries and OpenSSF Scorecard expect: every action is
 pinned to a full commit SHA (with a `# vX.Y.Z` comment), not a mutable tag, and each workflow declares a
 least-privilege `permissions: contents: read`. Bump the pins by resolving the new release tag to its SHA
 (`gh api repos/<owner>/<repo>/commits/<tag> --jq .sha`).
 
-- **CI gate** (`.github/workflows/ci.yml`): runs `bun run gate` (+ secrets, audit, license) on push/PR.
+- **CI gate** (`.github/workflows/ci.yml`): runs `bun run gate` (+ secrets, audit, license) on push/PR,
+  plus a `node 22 smoke` job that builds `dist/`, smoke-tests the built package under Node 22
+  (`scripts/node-smoke.mjs`), and compiles + round-trips the standalone CLI binary.
   Needs no secrets, so it runs on FORK PRs too - this is the check that gates external contributions.
   For green to actually block a merge, enable branch protection on `main` (require the `gate` status
   check + a PR review); the workflow only reports, it does not block by itself.
 - **SonarCloud** (`.github/workflows/sonarcloud.yml` + `sonar-project.properties`): CI-based analysis
   with LCOV coverage (lcov reporter set in `bunfig.toml`; `bun test --coverage` -> `coverage/lcov.info`). Project
-  keys captured: `projectKey=libredb_libredb-database`, `organization=libredb`. Activation
-  (post-push fine-tuning): bind the repo to the SonarCloud `libredb` org, add a `SONAR_TOKEN` repo
-  secret, DISABLE automatic analysis (CI-based is required for coverage), and confirm the latest
-  `sonarqube-scan-action` major. The DST harness `src/sim/` is marked test code, not production source.
+  keys captured: `projectKey=libredb_libredb-database`, `organization=libredb`. Activation is complete: the
+  repo is bound to the SonarCloud `libredb` org, `SONAR_TOKEN` is set, automatic analysis is disabled, and
+  the quality-gate and coverage badges are live in the README. `src/cli/main.ts` is additionally excluded
+  from Sonar coverage (`sonar.coverage.exclusions`), mirroring `coveragePathIgnorePatterns` in
+  `bunfig.toml`. The DST harness `src/sim/` is marked test code, not production source.
   **Fork PRs skip this job** (`if: push || head.repo == repo`): GitHub does not pass secrets to
   fork-triggered runs, so the scan would fail through no fault of the contributor. Fork contributions are
   analyzed after they merge to main; the `gate` (ci.yml) still runs on their PR.
 - **Publish** (`.github/workflows/publish.yml`): triggers ONLY on `release: [published]` (never on push/PR),
   runs the full gate, then `npm publish` authenticated via `setup-node` + the `NPMJS_TOKEN` secret. npm runs
   `prepublishOnly` (build + attw + publint) automatically. Releasing = create a tag + GitHub Release.
-  Provenance is omitted while private; add `--provenance` + `id-token: write` once public.
+  Publishes with `--provenance` (`id-token: write`) so npm carries a signed attestation verifiable via
+  `npm audit signatures`; a guard step verifies the release tag matches package.json, and follow-up jobs
+  publish to JSR (pinned `jsr@0.14.3`), attach standalone binaries to the GitHub Release, and push
+  multi-arch images to GHCR and Docker Hub.
 
 Deliberately NOT added now (minimalism - the layers above already cover this ground; each can be
 enabled later if the project wants a stronger posture):
 
-- **Dependency updates:** none for now; `bun outdated` is the manual stand-in. When PR volume justifies
-  automation, prefer **Dependabot** (GitHub-native, just `.github/dependabot.yml`, no external app,
-  Bun/`bun.lock` supported) over Renovate (stronger grouping/automerge but needs the external Renovate
-  GitHub App - a service dependency the minimalism rule avoids until it earns its place).
+- **Dependency updates:** Dependabot is configured (`.github/dependabot.yml`): weekly update PRs for
+  GitHub Actions SHA pins, Docker base digests, and npm devDependencies (grouped into a single PR).
+  Renovate stays rejected: stronger grouping/automerge, but it needs the external Renovate GitHub App -
+  a service dependency the minimalism rule avoids.
 - **SAST:** CodeQL via GitHub's **default setup** (Settings -> Code security -> enable) - no committed
   workflow file; it auto-detects the language. An advanced `.github/workflows/codeql.yml` (SHA-pinned
   `github/codeql-action/{init,analyze}`) is only for custom queries/paths - not needed here.
-- **npm provenance:** a one-line change to `publish.yml` (`--provenance` + `id-token: write`) once the
-  repo is public; the placeholder comment is already in the workflow.
+- **npm provenance:** implemented - `publish.yml` publishes with `--provenance` + `id-token: write`,
+  attaching a signed attestation verifiable via `npm audit signatures`.
 - **Optional security workflows - evaluated and skipped:** OpenSSF Scorecard, GitHub dependency-review,
   and osv-scanner each add a workflow file plus maintenance, and the existing stack (CodeQL default
   setup, SonarCloud, secretlint, `bun audit`, the license tripwire) already covers the ground. Add any
@@ -428,10 +442,10 @@ Each phase ended green through the gate, committed individually.
 1. **Lint + format (done):** Oxlint + Biome (formatter only), ESLint reduced to type-aware, `@eslint/js` removed.
 2. **Build (done):** `isolatedDeclarations` in `tsconfig.build.json`, `catalog.ts` annotation added.
 3. **Packaging (done):** attw + publint + `prepublishOnly` + `sideEffects: false` (no knip entries needed - scripts suffice).
-4. **Size budget (done):** size-limit, measured budget 4 kB (2.83 kB actual), gate reordered (build before size).
+4. **Size budget (done):** size-limit, measured budget 6 kB public entry (5.08 kB actual) and 5 kB browser entry (4.24 kB actual), gate reordered (build before size).
 5. **Environment (done):** `.editorconfig`, `.bun-version`, `bunfig.toml [install] exact`, CI reads `.bun-version` (preinstall guard dropped; `.npmrc` token remediation advised).
 6. **Security + hooks (done):** `bun audit` + secretlint + `.githooks` + `core.hooksPath` (secrets + audit also in CI).
 7. **Commit quality (done):** commitlint + config-conventional + `commit-msg` hook.
 8. **License (done):** runtime-only tripwire via `scripts/license-check.sh` (bunx, no devDependency).
 9. **Release (done):** changesets init + config + first changeset (Node 22 / ES2024 / sideEffects, patch).
-10. **CI (done):** `ci.yml` + `sonarcloud.yml` + `publish.yml` committed, SHA-pinned, inert until pushed; dependency bot and optional security workflows deliberately deferred (see "Deliberately NOT added now").
+10. **CI (done):** `ci.yml` + `sonarcloud.yml` + `publish.yml` committed, SHA-pinned, and now live on GitHub; Dependabot was added afterwards (`.github/dependabot.yml`), optional security workflows remain deferred (see "Deliberately NOT added now").

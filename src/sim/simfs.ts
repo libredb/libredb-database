@@ -42,6 +42,14 @@ export class SimFS implements FileSystem {
   private readonly files = new Map<string, SimFile>();
   /** When set, the NEXT read returns a seeded-short prefix, then disarms. */
   private shortReadArmed = false;
+  /** When set, the NEXT append persists only a seeded STRICT prefix of its
+   * bytes — possibly EMPTY (the write failed before anything reached disk),
+   * never the full record — then throws, modelling ENOSPC/EIO cutting a write
+   * short at an arbitrary point including before it started. */
+  private appendErrorArmed = false;
+  /** When set, the NEXT fsync throws — the bytes stay pending (not durable),
+   * modelling a durability point that failed after the write. */
+  private fsyncErrorArmed = false;
 
   constructor(seed: number) {
     this.random = mulberry32(seed);
@@ -58,9 +66,24 @@ export class SimFS implements FileSystem {
       size: () => f.durable.length + f.pending.length,
       read: (offset, length) => this.readFrom(f, offset, length),
       append: (b) => {
+        if (this.appendErrorArmed) {
+          this.appendErrorArmed = false;
+          // A STRICT prefix, never the full record. kept may be ZERO — a
+          // failure before any byte reached the disk is as real an ENOSPC
+          // outcome as a mid-record tear, and the seeded range covers both.
+          // (The deterministic poisoned-tail case, which needs a non-empty
+          // tear, is pinned separately in core.hardening.test.ts.)
+          const kept = Math.floor(this.random() * b.length);
+          for (const byte of b.subarray(0, kept)) f.pending.push(byte);
+          throw new Error("simfs: injected append fault (ENOSPC)");
+        }
         for (const byte of b) f.pending.push(byte);
       },
       fsync: () => {
+        if (this.fsyncErrorArmed) {
+          this.fsyncErrorArmed = false;
+          throw new Error("simfs: injected fsync fault (EIO)");
+        }
         f.durable = f.durable.concat(f.pending);
         f.pending = [];
       },
@@ -69,6 +92,21 @@ export class SimFS implements FileSystem {
       // The pools persist on the SimFS across close/reopen, like a real file.
       close: () => {},
     };
+  }
+
+  /** Arm a one-shot append fault: the next {@link WalFile.append} persists a
+   * seeded strict prefix of its bytes (possibly none of them) and throws.
+   * A non-empty prefix is exactly the poisoned-tail scenario the kernel's
+   * failure latch exists for (audit finding B3 / fsyncgate); an empty one is
+   * the clean-failure variant the latch must also survive. */
+  armAppendError(): void {
+    this.appendErrorArmed = true;
+  }
+
+  /** Arm a one-shot fsync fault: the next {@link WalFile.fsync} throws and the
+   * appended bytes stay in the un-fsync'd (crash-tearable) pending pool. */
+  armFsyncError(): void {
+    this.fsyncErrorArmed = true;
   }
 
   /**

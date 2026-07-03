@@ -30,6 +30,17 @@ const bytes = (...b: number[]): Uint8Array => new Uint8Array(b);
  * crash-injection tests below can hand-craft on-disk frames. */
 const u32 = (n: number): Buffer => Buffer.from([(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff]);
 
+/** CRC-32 (IEEE), duplicated here so the crash-injection tests can hand-craft
+ * frames without borrowing the kernel implementation they judge. */
+const crc32 = (data: Uint8Array): number => {
+  let crc = 0xffffffff;
+  for (let i = 0; i < data.length; i++) {
+    crc ^= data[i] as number;
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+};
+
 /** Temp directories created during the run, cleaned up after each test. */
 const dirs: string[] = [];
 const tempPath = (name: string): string => {
@@ -76,7 +87,11 @@ test("committed writes survive a simulated crash (no graceful close)", () => {
   crashed.transact((tx) => tx.set(bytes(1), bytes(10)));
   crashed.transact((tx) => tx.set(bytes(2), bytes(20)));
   // Simulate a crash: the process dies without ever calling close(). Because
-  // each commit fsync'd before returning, the data is already durable.
+  // each commit fsync'd before returning, the data is already durable. In a
+  // real crash the holder's pid would be dead and the lock auto-reclaimed;
+  // in-process the "crashed" handle is still this live pid, so drop the lock
+  // by hand to complete the simulation.
+  rmSync(`${path}.lock`);
 
   const recovered = open({ path });
   expect(dump(recovered)).toEqual([
@@ -163,10 +178,13 @@ test("a tail record whose checksum fails is discarded on recovery", () => {
   db.close();
   const goodSize = statSync(path).size;
 
-  // Append a fully-sized record whose checksum does not match its payload, as a
-  // half-flushed disk block would produce. payload = [set, keyLen=1, key=0].
+  // Append a fully-sized record whose PAYLOAD checksum does not match, as a
+  // half-flushed disk block would produce. The record header itself must be
+  // well-formed (its length field carries its own checksum in format v1), so
+  // the frame is: [len][crc32(len bytes)][bad payload crc][payload].
   const payload = Buffer.from([1, 0, 0, 0, 1, 0]);
-  appendFileSync(path, Buffer.concat([u32(payload.length), u32(0), payload]));
+  const lenField = u32(payload.length);
+  appendFileSync(path, Buffer.concat([lenField, u32(crc32(lenField)), u32(0), payload]));
 
   const reopened = open({ path });
   expect(dump(reopened)).toEqual([[5, 50]]);

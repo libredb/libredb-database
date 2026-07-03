@@ -9,28 +9,249 @@
  * `node:fs` into its import graph. The default Node entry (`index.ts`) wires this
  * adapter in as the default `fs`, so production behaviour is unchanged.
  *
- * Each method is the obvious synchronous syscall, so the adapter adds an
- * interface boundary, not behaviour. Appends go through one append-mode
- * descriptor (creating the file if missing); reads, size and truncate work by
- * path, matching how the WAL has always reached the disk.
+ * Everything runs on one file descriptor opened in append mode: positional
+ * reads, appends, fsync and truncate all address the same inode, so a path
+ * swapped out from under a live database cannot split reads from writes. Two
+ * durability details live here because they are platform facts, not kernel
+ * logic: creating the file fsyncs the PARENT DIRECTORY (POSIX does not make a
+ * new directory entry durable until then), and the exclusive {@link
+ * FileSystem.lock} is a `<path>.lock` file so a second writer — same process or
+ * another one — fails loudly instead of silently corrupting the log.
  */
-import { closeSync, fsyncSync, openSync, readFileSync, statSync, truncateSync, writeSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  fsyncSync,
+  ftruncateSync,
+  openSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  rmSync,
+  writeSync,
+} from "node:fs";
+import { hostname } from "node:os";
+import { dirname } from "node:path";
 
-import type { FileSystem } from "../core.ts";
+import { LibreDbError, type FileSystem } from "../core.ts";
+
+/** The first line of every LibreDB lock file, so tooling (and `--force`) can
+ * tell a real lock from an unrelated file that merely shares the name. */
+export const LOCK_SENTINEL = "libredb-lock";
+
+/** What a lock file records about its holder. `pid`/`host` let a later opener
+ * detect a stale lock (the holder died); `nonce` proves ownership on release. */
+interface LockOwner {
+  readonly pid: number;
+  readonly host: string;
+  readonly nonce: string;
+}
+
+/** Parse a lock file's contents. Returns undefined for an empty file or a
+ * legacy sentinel-only lock (both are LibreDB artifacts with no liveness info)
+ * and throws nothing — a FOREIGN file returns null. The sentinel test is an
+ * EXACT first-line match: a file that merely begins with the sentinel text
+ * ("libredb-locksmith...") is foreign, not ours. */
+function parseLock(contents: string): LockOwner | undefined | null {
+  if (contents === "") return undefined; // a create interrupted before the write
+  const [first, pid, host, nonce] = contents.split("\n");
+  if (first !== LOCK_SENTINEL) return null; // not ours
+  if (pid === undefined || host === undefined || nonce === undefined || nonce === "") {
+    return undefined; // sentinel-only legacy lock: ours, but anonymous
+  }
+  // The pid must be a real process id. A sentineled-but-mangled lock (partial
+  // overwrite, corruption) would otherwise carry pid=NaN, which the liveness
+  // probe reads as "dead" — and a LIVE holder's lock would be auto-reclaimed.
+  // Unparseable owner info downgrades to anonymous: never auto-stale.
+  const parsedPid = Number(pid);
+  if (!Number.isInteger(parsedPid) || parsedPid <= 0) return undefined;
+  return { pid: parsedPid, host, nonce };
+}
+
+/** Can the process behind `owner` be probed on THIS host, and is it alive?
+ * "verified dead" means same host and signal-0 says the pid is gone; a holder
+ * on another host is never verifiable either way. */
+function livenessOf(owner: LockOwner): "alive" | "dead" | "unverifiable" {
+  if (owner.host !== hostname()) return "unverifiable";
+  try {
+    process.kill(owner.pid, 0); // signal 0: existence probe, no signal sent
+    return "alive";
+  } catch (error) {
+    // ESRCH: no such process (dead). EPERM: exists but not ours (alive).
+    return (error as { code?: string }).code === "EPERM" ? "alive" : "dead";
+  }
+}
+
+/**
+ * Is the lock at `lockPath` stale — held by a LibreDB process that VERIFIABLY
+ * no longer exists? Everything short of verified-dead is non-stale on purpose:
+ * a foreign file is not a lock to steal; a holder on another host cannot be
+ * probed and might be running; an anonymous lock (empty, or the sentinel-only
+ * v0.1.x format) carries no liveness info — it may even be a concurrent
+ * lock() between its exclusive create and its sentinel write, so auto-
+ * reclaiming it could admit two live writers. A read failure other than
+ * ENOENT (permissions, IO) is a real problem to surface, not staleness.
+ * `--force` (see {@link forceUnlock}) is the explicit escape hatch for the
+ * unverifiable cases, with the risk on the human who invoked it.
+ */
+export function isStaleLock(lockPath: string): boolean {
+  let contents: string;
+  try {
+    contents = readFileSync(lockPath, "utf8");
+  } catch (error) {
+    // ENOENT: it vanished between the failed create and this read — retry.
+    return (error as { code?: string }).code === "ENOENT";
+  }
+  const owner = parseLock(contents);
+  if (owner === null || owner === undefined) return false;
+  return livenessOf(owner) === "dead";
+}
+
+/** One attempt to create `lockPath` exclusively. Returns false when it already
+ * exists; any other failure (missing directory, permissions) propagates. */
+function tryCreateLock(lockPath: string, contents: string): boolean {
+  let fd: number;
+  try {
+    fd = openSync(lockPath, "wx"); // "wx": exclusive create, fails if it exists
+  } catch (error) {
+    if ((error as { code?: string }).code !== "EEXIST") throw error;
+    return false;
+  }
+  try {
+    // Loop: writeSync may legally write fewer bytes than asked, and a partial
+    // sentinel would read as an anonymous stray instead of this holder's lock.
+    const bytes = Buffer.from(contents, "utf8");
+    for (let written = 0; written < bytes.length; ) {
+      written += writeSync(fd, bytes, written);
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return true;
+}
+
+/**
+ * Atomically claim `lockPath` for removal by renaming it aside, then judge the
+ * CLAIMED file's contents with `verdict`. Rename is the atomicity primitive:
+ * of N racers, exactly one wins the rename (the rest see ENOENT and report
+ * "gone") — so check-then-delete can never remove a lock a NEW writer created
+ * between the check and the delete. If `verdict` refuses, the file is renamed
+ * back so the refused lock keeps protecting its holder.
+ *
+ * Returns "removed" | "gone" (nothing to claim) | never (verdict threw).
+ */
+function claimAndRemoveLock(lockPath: string, verdict: (contents: string) => void): "removed" | "gone" {
+  const claimed = `${lockPath}.claim-${process.pid}-${randomBytes(4).toString("hex")}`;
+  try {
+    renameSync(lockPath, claimed);
+  } catch (error) {
+    if ((error as { code?: string }).code === "ENOENT") return "gone"; // another racer won
+    throw error;
+  }
+  let contents: string;
+  try {
+    contents = readFileSync(claimed, "utf8");
+    verdict(contents);
+  } catch (error) {
+    // Refused (or unreadable): put the lock back where it was so its holder
+    // stays protected, then surface the refusal.
+    renameSync(claimed, lockPath);
+    throw error;
+  }
+  rmSync(claimed, { force: true });
+  return "removed";
+}
+
+/**
+ * Remove a lock file with `--force` semantics: a LibreDB lock is removed
+ * unless its holder is VERIFIABLY alive (same host, pid exists); a foreign
+ * file is always refused. An unverifiable holder (another host) is removed —
+ * that is exactly the case force exists for — with the risk on the caller.
+ * The claim is atomic (rename-aside), so force can never delete a lock a new
+ * writer acquired after the stale one was observed. Exported for the CLI,
+ * which offers this as its `--force` flag.
+ */
+export function forceUnlock(path: string): void {
+  const lockPath = `${path}.lock`;
+  if (!existsSync(lockPath)) return; // nothing to remove
+  claimAndRemoveLock(lockPath, (contents) => {
+    const owner = parseLock(contents);
+    if (owner === null) {
+      throw new LibreDbError("LOCKED", `refusing to remove ${lockPath}: not a libredb lock file`);
+    }
+    if (owner !== undefined && livenessOf(owner) === "alive") {
+      throw new LibreDbError("LOCKED", `refusing to remove ${lockPath}: holder (pid ${owner.pid}) is alive`);
+    }
+  });
+}
+
+/** Error codes that mean "this platform cannot fsync a directory" (Windows
+ * refuses to open one; some filesystems refuse the fsync) — the only failures
+ * a directory fsync may silently absorb. ENOENT is included for the caller
+ * that probes a path whose directory is already gone. A code outside this set
+ * (EIO above all) is a REAL failure: the new directory entry may not be
+ * durable, and pretending otherwise would be the exact silence the fsyncgate
+ * lesson warns about. */
+const DIR_FSYNC_UNSUPPORTED = new Set(["EACCES", "EBADF", "EINVAL", "EISDIR", "ENOENT", "ENOTSUP", "EPERM", "UNKNOWN"]);
+
+/** The syscalls {@link fsyncDirectoryOf} performs, injectable so a test can
+ * exercise the failure classification without a faulty real disk. */
+interface DirSyncIo {
+  openSync(path: string, flags: string): number;
+  fsyncSync(fd: number): void;
+  closeSync(fd: number): void;
+}
+
+/**
+ * Fsync the directory containing `path`, making a just-created file's directory
+ * entry durable. POSIX leaves a new entry volatile until the directory itself
+ * is fsync'd — without this, a freshly created database (and every commit in
+ * it) can vanish wholesale on power loss. Platforms that cannot fsync a
+ * directory are tolerated (see {@link DIR_FSYNC_UNSUPPORTED}); any other
+ * failure — an EIO from the disk — propagates, because a database that cannot
+ * make its own existence durable must say so rather than carry on. Exported
+ * for the tests that pin it.
+ */
+export function fsyncDirectoryOf(path: string, io: DirSyncIo = { openSync, fsyncSync, closeSync }): void {
+  try {
+    const dirFd = io.openSync(dirname(path), "r");
+    try {
+      io.fsyncSync(dirFd);
+    } finally {
+      io.closeSync(dirFd);
+    }
+  } catch (error) {
+    const code = (error as { code?: string }).code ?? "UNKNOWN";
+    if (!DIR_FSYNC_UNSUPPORTED.has(code)) throw error;
+  }
+}
 
 /** Build the default node:fs-backed {@link FileSystem}. */
 export function nodeFileSystem(): FileSystem {
   return {
     open(path) {
-      const fd = openSync(path, "a"); // append-only; creates the file if missing
+      const creating = !existsSync(path);
+      const fd = openSync(path, "a+"); // read + append-only writes; creates if missing
+      if (creating) fsyncDirectoryOf(path);
       return {
         size() {
-          return statSync(path).size;
+          return fstatSync(fd).size;
         },
         read(offset, length) {
-          // A fresh Uint8Array so the returned slice is an independent copy, not
-          // a view aliasing a shared Buffer pool.
-          return new Uint8Array(readFileSync(path)).subarray(offset, offset + length);
+          // Positional reads on the WAL's own descriptor, looped because a
+          // single readSync may legally return fewer bytes than asked. Fewer
+          // bytes than the file holds would otherwise read as a torn tail and
+          // truncate committed data — the kernel treats that as an IO fault.
+          const out = new Uint8Array(length);
+          let filled = 0;
+          while (filled < length) {
+            const count = readSync(fd, out, filled, length - filled, offset + filled);
+            if (count === 0) break; // end of file
+            filled += count;
+          }
+          return filled === length ? out : out.subarray(0, filled);
         },
         append(bytes) {
           for (let written = 0; written < bytes.length; ) {
@@ -41,12 +262,62 @@ export function nodeFileSystem(): FileSystem {
           fsyncSync(fd);
         },
         truncate(length) {
-          truncateSync(path, length);
+          ftruncateSync(fd, length);
         },
         close() {
           closeSync(fd);
         },
       };
+    },
+    lock(path) {
+      const lockPath = `${path}.lock`;
+      const nonce = randomBytes(8).toString("hex");
+      const contents = `${LOCK_SENTINEL}\n${process.pid}\n${hostname()}\n${nonce}\n`;
+      // Two attempts: the second runs only after a stale lock (a crashed
+      // holder's leftover) was reclaimed. A live holder never yields.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (tryCreateLock(lockPath, contents)) {
+          return () => {
+            // Release only OUR lock — atomically. If someone force-removed it
+            // and locked again, the claimed contents carry THEIR nonce; the
+            // verdict throws, the rename puts their lock back, and we leave it
+            // alone (a plain check-then-delete would race a fresh acquire).
+            try {
+              claimAndRemoveLock(lockPath, (c) => {
+                if (parseLock(c)?.nonce !== nonce) throw new Error("not ours");
+              });
+            } catch {
+              // Not ours or already gone: either way there is nothing to release.
+            }
+          };
+        }
+        if (!isStaleLock(lockPath)) break;
+        // Reclaim the stale lock ATOMICALLY: rename-aside means that of N
+        // processes racing this reclaim, exactly one removes the stale file —
+        // the losers see it gone and retry the exclusive create, where again
+        // exactly one wins. Two concurrent writers can never both acquire.
+        // The verdict re-checks staleness on the claimed bytes: if a NEW
+        // writer's lock slid in between the check and the claim, it is put
+        // back untouched.
+        try {
+          // "removed" (we reclaimed it) and "gone" (another racer did) call
+          // for the same next step: retry the exclusive create, where exactly
+          // one contender wins. Only a refusal breaks out as locked.
+          claimAndRemoveLock(lockPath, (c) => {
+            const owner = parseLock(c);
+            // Only a VERIFIED-dead holder is auto-reclaimed; anything else —
+            // foreign bytes, an anonymous lock, an unverifiable host — stays.
+            if (owner === null || owner === undefined) throw new Error("not verifiably stale");
+            if (livenessOf(owner) !== "dead") throw new Error("holder not verifiably dead");
+          });
+        } catch {
+          break; // the lock is not verifiably stale after all: locked
+        }
+      }
+      throw new LibreDbError(
+        "LOCKED",
+        `${path} is locked (${lockPath}); another writer holds it — close it first, or use --force in the CLI`,
+      );
     },
   };
 }

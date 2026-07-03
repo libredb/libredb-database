@@ -29,8 +29,23 @@ jobs:
     # `latest` channel or Docker `:latest`. Every job carries the same guard.
     if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC: signs the npm provenance attestation
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # The release tag must name the version the tree actually carries: a tag
+      # created before `changeset:version` (or a typo'd tag) must fail loudly
+      # here, not ship binaries and images labeled with the wrong semver.
+      - name: Verify release tag matches package.json
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          PKG="v$(node -p 'require("./package.json").version')"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "Release tag $TAG does not match package.json $PKG" >&2
+            exit 1
+          fi
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
@@ -45,9 +60,9 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
       # npm publish runs prepublishOnly (build + attw + publint) automatically.
-      # Provenance is intentionally omitted while the repo is private; once it is
-      # public, add `--provenance` here and `id-token: write` to permissions.
-      - run: npm publish --access public
+      # --provenance attaches a signed attestation binding the tarball to this
+      # repo, commit, and workflow (verifiable via `npm audit signatures`).
+      - run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPMJS_TOKEN }}
       # Run summary on the run page (no emoji, per repo convention).
@@ -81,7 +96,11 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22"
-      - run: npx --yes jsr publish
+      # Pinned: an unpinned `jsr@latest` would hand the publish-capable OIDC
+      # token to whatever the registry serves at run time (supply-chain risk).
+      # Bump the version deliberately, like every other pin in this workflow
+      # (Dependabot does not track npx invocations).
+      - run: npx --yes jsr@0.14.3 publish
       - name: Job summary
         if: success()
         run: |

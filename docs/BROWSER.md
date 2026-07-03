@@ -57,6 +57,17 @@ maps onto an OPFS **sync access handle** (whose `read`/`write`/`getSize`/
 with no async core. Sync access handles are only available **inside a dedicated
 Web Worker**, so durable LibreDB *must* live in a Worker.
 
+One honest caveat on the word *durable*: the kernel's durability point maps to
+the handle's `flush()`, and the OPFS specification does not promise that
+`flush()` carries POSIX-`fsync` strength against **power loss** — the browser's
+storage layer decides when bytes reach stable media. In practice a committed
+write survives a tab crash, a page reload, and a browser restart; what a sudden
+power cut can lose is browser-and-OS dependent. Treat OPFS durability as "as
+strong as the browser's flush", not as a battery-backed guarantee (verifying
+this per engine is tracked in
+[#10](https://github.com/libredb/libredb/issues/10)). Storage may also be
+evicted under pressure unless you request persistence — see the checklist below.
+
 ---
 
 ## 3. In-memory: the 30-second start (main thread)
@@ -272,8 +283,11 @@ setup from §4.1.
   on the file — only one handle per file at a time. So one Worker owns the database;
   a second tab/Worker cannot open the same file concurrently. For multi-tab apps,
   route all access through a single owner (e.g. a `SharedWorker`, or elect one tab
-  as writer). This matches LibreDB's "single-process, no internal file locking"
-  model — it is the foundation, not a server.
+  as writer). This matches LibreDB's single-writer model — on Node the kernel
+  enforces it with an exclusive `<path>.lock` file (a second `open` throws
+  `LOCKED`); in the browser the sync access handle's own exclusivity provides
+  the same guarantee, so the OPFS adapter needs no lock file. It is the
+  foundation, not a server.
 - **OPFS needs a Worker and a secure context.** Sync access handles exist only in
   dedicated Web Workers, over HTTPS or `localhost`. In-memory `open()` has neither
   requirement.

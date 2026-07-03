@@ -51,7 +51,7 @@ A database does not work this way, and understanding why is the first real step.
 The LibreDB file is not the current state -- it is an **append-only log of every
 change that ever happened**. You never seek back into the file to edit a spot;
 you only ever **append to the end**. This structure is called a **write-ahead log
-(WAL)** ([`core.ts`](../src/core.ts) L275-294).
+(WAL)** ([`core.ts`](../src/core.ts) L403-435).
 
 ```
 JSON / snapshot model          LibreDB / WAL model
@@ -74,7 +74,7 @@ recognizable once named:
 - **`app.log`.** You append log lines; you never rewrite the file to change line 400.
 
 Even a delete is an append: it writes a *tombstone* record that says "this key is
-gone now" (`OP_DELETE`, [`core.ts`](../src/core.ts) L239), not a physical erasure.
+gone now" (`OP_DELETE`, [`core.ts`](../src/core.ts) L438), not a physical erasure.
 The file only ever grows.
 
 **Why append-only?** Because appending is atomic and safe. Rewriting the middle
@@ -122,7 +122,7 @@ always showed you the top costume ("l"). `xxd` just takes the costume off.
 
 - A **bit** is one yes/no: high voltage (1) or not (0).
 - A **byte** is 8 bits, giving 2^8 = 256 combinations, so it holds a number from
-  **0 to 255**. `Key = Uint8Array` in the kernel ([`core.ts`](../src/core.ts) L35)
+  **0 to 255**. `Key = Uint8Array` in the kernel ([`core.ts`](../src/core.ts) L81)
   means "unsigned 8-bit integers" -- a sequence of bytes.
 - **Hex** is just a compact way to *write* a byte. Because 4 bits map exactly to
   one hex digit (2^4 = 16), one byte is always exactly two hex digits. `0x6c`
@@ -133,7 +133,7 @@ The deepest point: **a byte is a universal medium.** A string, a number, an
 image, a video -- on disk they are all the same thing, a sequence of bytes. The
 only difference is *interpretation*: the byte `01100001` is "97" through one lens
 and "a" through another. This is exactly why the kernel keeps values as opaque
-bytes and never interprets them ([`core.ts`](../src/core.ts) L37-39) -- that
+bytes and never interprets them ([`core.ts`](../src/core.ts) L83-85) -- that
 decision is a lens concern, not a kernel one, and it is what lets one storage
 substrate carry three data models.
 
@@ -150,27 +150,31 @@ sample `libredb-studio/data/demo.libredb` begins:
 00000020: 6572 7300 0000 7e7b 226b 696e 6422 3a22  ers...~{"kind":"
 ```
 
-The record format ([`core.ts`](../src/core.ts) L285-291) is:
+This sample predates the v1 on-disk format, so it uses the legacy v0.1.x framing: no file header, and an 8-byte record header. The formats ([`core.ts`](../src/core.ts) L413-434) are:
 
 ```
-record  = [u32 payloadLength][u32 crc32(payload)][payload]
+v1 file       = [4-byte magic "LRDB"][u16 formatVersion][u16 reserved], then records
+v1 record     = [u32 payloadLength][u32 crc32(the 4 length bytes)][u32 crc32(payload)][payload]
+legacy record = [u32 payloadLength][u32 crc32(payload)][payload]   <- decoded below
 payload = one or more ops, back to back
   set:    [u8 1][u32 keyLength][key][u32 valueLength][value]
   delete: [u8 0][u32 keyLength][key]
 integers are big-endian (most significant byte first)
 ```
 
+The kernel still opens legacy files (recognized by their first record replaying cleanly) and keeps appending legacy-framed records to them; a new database starts with the 8-byte file header and uses the 12-byte record header, whose extra checksum covers the length field itself.
+
 Decoding the first record byte by byte:
 
 | Bytes | Value | Meaning | Code |
 | --- | --- | --- | --- |
-| `00 00 00 9d` | 157 | payloadLength | `encodeRecord` ([`core.ts`](../src/core.ts) L363) |
-| `ea 44 78 48` | 0xea447848 | crc32 of the payload | L364 |
-| `01` | 1 | OP_SET | L349 |
-| `00 00 00 16` | 22 | keyLength | L351 |
-| `00 6c 69 ... 73` | `\x00libredb:catalog:users` | the key (22 bytes) | L353 |
-| `00 00 00 7e` | 126 | valueLength | L357 |
-| `7b 22 6b ...` | `{"kind":"relational",...}` | the value (126 bytes) | L359 |
+| `00 00 00 9d` | 157 | payloadLength | `encodeRecord` ([`core.ts`](../src/core.ts) L530) |
+| `ea 44 78 48` | 0xea447848 | crc32 of the payload (legacy framing) | L532 |
+| `01` | 1 | OP_SET | L515 |
+| `00 00 00 16` | 22 | keyLength | L516 |
+| `00 6c 69 ... 73` | `\x00libredb:catalog:users` | the key (22 bytes) | L518 |
+| `00 00 00 7e` | 126 | valueLength | L521 |
+| `7b 22 6b ...` | `{"kind":"relational",...}` | the value (126 bytes) | L523 |
 
 Note the key begins with a `0x00` byte. That is the catalog's reserved marker
 ([`lens/catalog.ts`](../src/lens/catalog.ts), `RESERVED_MARKER`): `0x00` is the
@@ -188,19 +192,19 @@ text? Four reasons, each of which you can now see in the bytes:
    scanning for it. Fixed-width fields are a `struct`; JSON is free text you must
    parse.
 2. **Length-prefixing kills delimiter-hunting.** "Read 4 bytes for the length,
-   then read exactly that many bytes" ([`core.ts`](../src/core.ts) L377-383).
+   then read exactly that many bytes" ([`core.ts`](../src/core.ts) L559-571).
    No scanning for a closing quote, no escaping. Crucially, the value can then
    contain *any* byte -- even `0x00`, even `"` -- so the store is byte-safe and
    can hold arbitrary blobs. Text formats are not byte-safe.
 3. **Space and speed.** Binary integers are smaller than their text spellings and
-   need no parser; `readU32` ([`core.ts`](../src/core.ts) L311) turns 4 bytes into
+   need no parser; `readU32` ([`core.ts`](../src/core.ts) L464) turns 4 bytes into
    a number with one shift-and-add.
 4. **Sortability.** Ordering over raw bytes is exact and stable, and big-endian
    makes byte-lexicographic order match numeric order. String order is not stable
    across encodings (`"10" < "2"` in UTF-16). See `compareKeys`
-   ([`core.ts`](../src/core.ts) L189).
+   ([`core.ts`](../src/core.ts) L285).
 
-The **CRC-32** ([`core.ts`](../src/core.ts) L326, written without a lookup table
+The **CRC-32** ([`core.ts`](../src/core.ts) L479, written without a lookup table
 so the mechanism stays visible) is the record's "is this complete?" checksum. It
 is what lets recovery tell a fully-written record from one a crash left
 half-flushed.
@@ -212,14 +216,14 @@ half-flushed.
 A common early misconception: "we opened the file in append mode, so writing to
 the file must keep memory in sync automatically." It does not. There is **no
 magic** and **no automatic bridge** between the file and the in-memory data.
-Opening in append mode (`openSync(path, "a")`,
+Opening in append mode (`openSync(path, "a+")` -- read plus append-only writes,
 [`adapter/node-fs.ts`](../src/adapter/node-fs.ts)) only means "writes go to the
 end of the file." It says nothing about memory.
 
 Memory and disk are two separate worlds -- a JavaScript array on the heap, and a
 byte stream on disk -- and *the kernel's code explicitly bridges them*. Writing
 `employees.insert(...)` runs through `transact`
-([`core.ts`](../src/core.ts) L493):
+([`core.ts`](../src/core.ts) L882):
 
 ```ts
 transact(run) {
@@ -227,11 +231,11 @@ transact(run) {
   const journal = [];
   const result = run(makeTransaction(working, journal));
   //   inside, each tx.set does two things:
-  //     applySet(working, key, value)   // (A) update the in-memory COPY   L259
-  //     journal.push({kind:"set",...})  // records the op in a list        L260
+  //     applySet(working, key, value)   // (A) update the in-memory COPY   L369
+  //     journal.push({kind:"set",...})  // records the op in a list        L370
   if (log !== null && journal.length > 0)
-    log.append(journal);                      // (B) write to DISK (append + fsync)  L508
-  committed = working;                        // (C) make it official (atomic swap)  L509
+    log.append(journal);                      // (B) write to DISK (append + fsync)  L910
+  committed = working;                        // (C) make it official (atomic swap)  L924
 }
 ```
 
@@ -245,17 +249,19 @@ Two design choices fall out of this being explicit:
 
 - **Copy-on-write commit.** The transaction works on a *copy* (`working`), and a
   successful commit is a single atomic reference assignment `committed = working`
-  ([`core.ts`](../src/core.ts) L509). If `run` throws, that line is never reached
+  ([`core.ts`](../src/core.ts) L924). If `run` throws, that line is never reached
   and `committed` keeps its old value -- so an abort applies nothing, with no undo
   logic. Atomicity is "the reference either changed or it did not."
 - **The order matters: disk before memory.** (B) runs before (C). If the disk
-  append fails, we throw *before* the swap, leaving memory and disk agreeing on
-  the prior state. This is only possible *because* they are separate operations
-  you can order.
+  append fails, we throw a typed error (code `FAILED`) *before* the swap, so memory
+  keeps the prior state -- and the database latches: every later `transact()` throws
+  `FAILED` until close and reopen, because the file tail may hold a torn record that
+  only recovery can repair. This is only possible *because* they are separate
+  operations you can order.
 
 A subtle bonus: writes within one transaction accumulate in `journal` (a list in
 RAM) and are flushed as **one** appended record ([`core.ts`](../src/core.ts)
-L508). Five `set`s in a transaction produce one disk append, not five -- atomicity
+L910). Five `set`s in a transaction produce one disk append, not five -- atomicity
 and throughput at once.
 
 > Aside: memory-mapped files (mmap) *do* let the OS couple a memory region to a
@@ -276,7 +282,7 @@ the WAL, `fsync`, CRC, and recovery.
 Here is the danger. `append` hands bytes to the OS, but the OS may keep them in
 its **page cache** (RAM) and write to the physical device "later." If the power
 fails in that window, a commit you already reported as successful is lost.
-**`fsync`** ([`core.ts`](../src/core.ts) L127, called at L437; `fsyncSync` in the
+**`fsync`** ([`core.ts`](../src/core.ts) L209, called at L810; `fsyncSync` in the
 Node adapter) is the command that closes this window: "OS, flush this file to
 durable storage now, and do not return until it is there." It is the single line
 that gives the word "durability" its weight.
@@ -292,16 +298,16 @@ writeback) is unsafe. Delegating is not the same as forgetting.
 - Committed (fsync'd) data survives; recovery brings it back.
 - An in-flight transaction not yet fsync'd is lost -- which is *correct*
   (atomicity: it never happened).
-- A torn last record is truncated away on recovery
-  ([`core.ts`](../src/core.ts) L413).
+- A torn last record is truncated away on recovery, fsync'd, and reported through
+  the `onRecovery` open option ([`core.ts`](../src/core.ts) L742-755).
 
 **The trust boundary.** Good systems do not "trust the language" broadly; they
 shrink and make explicit exactly what they must trust. The kernel imports nothing
 from `node:`. Every byte to disk goes through one tiny interface, the
-`FileSystem` seam ([`core.ts`](../src/core.ts) L109-134):
+`FileSystem` seam ([`core.ts`](../src/core.ts) L178-214):
 
 ```ts
-interface FileSystem { open(path): WalFile }
+interface FileSystem { open(path): WalFile; lock?(path): release }  // lock is optional
 interface WalFile { size; read; append; fsync; truncate; close }  // that is all
 ```
 
@@ -333,26 +339,33 @@ write format was designed for the reader.** Every record is length-framed, so th
 reader never guesses where a record ends -- it reads the header, jumps exactly
 that many bytes, and lands on the next record. The format is *self-describing*.
 
-**Cold read -- `recover`** ([`core.ts`](../src/core.ts) L397) reads the whole file
+**Cold read -- `recover`** ([`core.ts`](../src/core.ts) L666) reads the whole file
 and replays every record:
 
 ```
-offset = 0
-loop:
-  read 8-byte header -> payloadLength, crc         L402-403
-  end = offset + 8 + payloadLength
-  if end > file length  -> STOP: record is torn    L406
-  if crc32(payload) != crc -> STOP: record corrupt L408
-  replayPayload(payload) -> apply set/delete        L409
-  offset = end                                      jump to the next record
-if leftover bytes remain -> truncate them           L413
+identify the file first (`recover`, L666):
+  empty file -> new database (header written with the first commit)
+  starts with "LRDB" magic -> v1; a newer version -> throw UNSUPPORTED_VERSION
+  no magic, but the first record replays cleanly -> legacy v0.1.x
+  anything else -> throw NOT_A_DATABASE; the file is left untouched
+then replay records (`replayLog`, L618):
+  read the record header (12 bytes v1, 8 legacy) -> payloadLength, checksums
+  v1: header fails its own checksum -> throw CORRUPT_WAL             L629
+  end = header end + payloadLength
+  if end > file length -> STOP: torn tail                            L634
+  if crc32(payload) != stored crc:
+    with data after it -> throw CORRUPT_WAL, never truncate          L638
+    at the file's end  -> STOP: damaged tail                         L643
+  replayPayload(payload) -> apply set/delete                         L645
+  offset = end
+leftover tail bytes -> truncate + fsync, reported via onRecovery    L742-755
 ```
 
 Three things happen as the flat log becomes the in-memory state -- this is the
 whole of "reading":
 
 1. **Collapse.** Superseded records and tombstones are replayed and dropped via
-   `applySet` / `applyDelete` ([`core.ts`](../src/core.ts) L219, L227) -- the same
+   `applySet` / `applyDelete` ([`core.ts`](../src/core.ts) L315, L323) -- the same
    functions live writes use, so "what a set means" has exactly one definition.
    The last write of a key wins. In `demo.libredb`, `project:1` is written twice
    on disk but collapses to one live key in memory.
@@ -377,25 +390,27 @@ whole of "reading":
 
    Sorting is what makes queries cheap (below); the cold read pays for it once.
 3. **Restructure.** A flat, framed byte stream becomes a JavaScript array of
-   `{key, value}` objects (`StoredEntry[]`, [`core.ts`](../src/core.ts) L175). The
+   `{key, value}` objects (`StoredEntry[]`, [`core.ts`](../src/core.ts) L271). The
    framing (lengths, CRC) is gone -- the JS array holds structure natively.
 
 Torn-tail handling is the payoff of append-only: because a crash can only damage
-the last record, recovery trusts every record up to the first one that is
-incomplete or fails its checksum, and truncates the rest so the next append starts
-on a clean boundary.
+the last record, recovery trusts every record up to a genuinely torn or half-flushed
+tail, truncates that tail away (fsync'd, and reported through the `onRecovery` open
+option so it is never silent), and refuses to open with a `CORRUPT_WAL` error when a
+record fails its checksum with intact data after it -- that is corruption, not a crash
+artifact, and truncating there would silently destroy committed records.
 
 **Hot read -- queries.** Once in memory, reads never touch disk:
 
 - `get(key)` is a **binary search** over the sorted array (`locate`,
-  [`core.ts`](../src/core.ts) L203; `get` at L250) -- O(log n), like finding a
+  [`core.ts`](../src/core.ts) L299; `get` at L360) -- O(log n), like finding a
   word in a dictionary by halving.
 - `getRange(start, end)` is "find the start, walk until the end"
-  ([`core.ts`](../src/core.ts) L262-270). Because the array is sorted, all keys in
+  ([`core.ts`](../src/core.ts) L377-399). Because the array is sorted, all keys in
   a range are contiguous -- which is why `prefix("users:")` (scanning a table) is
   cheap even though `users:1` and `users:2` were far apart on disk.
 - **Read-your-writes**: a transaction reads from its `working` copy, so it sees
-  its own not-yet-committed writes ([`core.ts`](../src/core.ts) L242-247).
+  its own not-yet-committed writes ([`core.ts`](../src/core.ts) L358-363).
 
 The resolution to the "reading is hard" worry: all the hard work is concentrated
 into a *single moment* (open), which produces a clean sorted structure that makes
@@ -459,20 +474,22 @@ db.close();                                // free memory, close the file descri
 
 - **`open`** ([`index.ts`](../src/index.ts) wires the `node:fs` adapter when a
   path is given without one) calls `openLog` -> `recover`
-  ([`core.ts`](../src/core.ts) L429, L397). It opens an append-mode descriptor,
-  reads the **whole file** into memory (`readFileSync` in the Node adapter), and
-  replays it into the sorted `committed` array. This is the cold boot.
+  ([`core.ts`](../src/core.ts) L769, L666). It opens an append-mode descriptor,
+  reads the **whole file** into memory (a positional-read loop over the file
+  descriptor in the Node adapter), and replays it into the sorted `committed`
+  array. This is the cold boot.
 - **Use.** Reads come from memory; writes append + fsync through the descriptor
   that stays open for the session.
-- **`close`** ([`core.ts`](../src/core.ts) L517) sets `closed`, closes the file
-  descriptor (`log.close()`), and drops the array (`committed = []`) for GC. It is
-  idempotent. Importantly, **durability does not depend on `close`** -- every
-  commit was already fsync'd, so committed data survives even a crash with no
-  `close`. `close` only releases resources.
+- **`close`** ([`core.ts`](../src/core.ts) L932) sets `closed`, closes the file
+  descriptor (`log.close()`), releases the exclusive open lock, and drops the
+  array (`committed = []`) for GC. It is idempotent. Importantly, **durability
+  does not depend on `close`** -- every commit was already fsync'd, so
+  committed data survives even a crash with no `close`. `close` only releases
+  resources.
 
 **The memory model, and its one big consequence.** Two memory moments matter:
 
-- *Transient peak* at open: `readFileSync` loads the entire file (say 500 MB) into
+- *Transient peak* at open: recovery reads the entire file (say 500 MB) into
   a buffer while replaying.
 - *Retained*: after replay, that buffer is GC'd; what stays is the live data only
   (say 50 MB), because recovery collapsed the dead records.
@@ -531,7 +548,7 @@ machinery (MVCC + conflict detection). In LibreDB it is *free*: the API is
 synchronous and single-threaded, so each transaction body runs to completion
 before the next begins -- the schedule is serial by construction, and the kernel
 forbids nested transactions to keep it that way
-([`core.ts`](../src/core.ts) L490-497). Cheap serializability is a gift of the
+([`core.ts`](../src/core.ts) L887-889). Cheap serializability is a gift of the
 constraint, not a feature that was built.
 
 ---
@@ -549,9 +566,10 @@ constraint, not a feature that was built.
 - **A byte-honest multi-model foundation.** The kernel stores opaque bytes in a
   single ordered keyspace; three data models (kv, document, relational) are lenses
   over it with no duplicated storage.
-- **A small, explicit trust boundary.** The `FileSystem` seam is six operations.
-  The same kernel runs on Node, in the browser (OPFS), and against a fault-
-  injecting fake, with zero `node:` imports in the core.
+- **A small, explicit trust boundary.** The `FileSystem` seam is `open` (plus an
+  optional advisory `lock`) returning a six-operation file handle. The same
+  kernel runs on Node, in the browser (OPFS), and against a fault-injecting
+  fake, with zero `node:` imports in the core.
 - **Free serializability.** The serial execution model gives the strongest
   isolation level at no cost.
 - **Reliability discipline.** 100% line/function/statement coverage, plus a
@@ -582,13 +600,11 @@ kernel small; see [`ARCHITECTURE.md` section 10.2/10.3](../ARCHITECTURE.md) and
   project explicitly refuses (see [`MANIFESTO.md`](../MANIFESTO.md)).
 - **mmap and OS-coupled memory.** Explicit hand-coded sync is chosen over
   memory-mapped files for clarity and control over the durability point.
-- **Group-commit / fsync-batching, versioned WAL headers, expanded fault
-  profiles.** Exploratory durability-hardening directions tracked in issue
-  [#9](https://github.com/libredb/libredb-database/issues/9); intentionally not in
-  the current core.
-- **Directory fsync on first file creation.** A known durability gap
-  ([`ARCHITECTURE.md` 10.3](../ARCHITECTURE.md)): creating a file durably needs a
-  directory fsync, currently not done.
+- **Group-commit / fsync-batching.** An exploratory durability-hardening direction
+  tracked in issue [#9](https://github.com/libredb/libredb-database/issues/9);
+  intentionally not in the current core. (Two other directions from #9 have since
+  landed: the on-disk format now carries a versioned file header, and the DST
+  harness has fault-injection profiles.)
 
 The unifying rule: **durability hardening lands inside the guarded core under
 heavy review; scaling features are pushed above the trust boundary wherever the
@@ -633,14 +649,17 @@ correct, not by absorbing every feature.
 
 **Source (all line numbers are [`src/core.ts`](../src/core.ts) unless noted):**
 
-- Types: `Key`/`Value` (L35-39), `Transaction` (L62-75), `FileSystem`/`WalFile`
-  (L109-134), `OpenOptions` (L143-155).
-- Ordered store: `compareKeys` (L189), `locate` (L203), `applySet` (L219),
-  `applyDelete` (L227), `makeTransaction` (L248).
-- Record codec: format comment (L275-294), `writeU32` (L302), `readU32` (L311),
-  `crc32` (L326), `encodeRecord` (L339), `replayPayload` (L371).
-- Durability + recovery: `recover` (L397), `openLog` (L429, fsync at L437),
-  `open` (L453), `transact` (L493, disk-then-memory at L508-509), `close` (L517).
+- Types: `LibreDbError`/`ErrorCode` (L44-70), `Key`/`Value` (L81-85), `Transaction`
+  (L113-129), `FileSystem`/`WalFile` (L178-214), `RecoveryInfo` (L218-222),
+  `OpenOptions` (L231-250).
+- Ordered store: `compareKeys` (L285), `locate` (L299), `applySet` (L315),
+  `applyDelete` (L323), `makeTransaction` (L358).
+- Record codec: format comment (L403-435), `writeU32` (L455), `readU32` (L464),
+  `crc32` (L479), `encodeFileHeader` (L491), `encodeRecord` (L505),
+  `replayPayload` (L551).
+- Durability + recovery: `replayLog` (L618), `recover` (L666), `isLegacyLog` (L724),
+  `finishReplay` (L742), `openLog` (L769, fsync at L810), `open` (L826),
+  `transact` (L882, disk-then-memory at L910-924), `close` (L932).
 - Adapters and lenses: [`src/adapter/node-fs.ts`](../src/adapter/node-fs.ts),
   [`src/adapter/opfs.ts`](../src/adapter/opfs.ts),
   [`src/adapter/store.ts`](../src/adapter/store.ts),

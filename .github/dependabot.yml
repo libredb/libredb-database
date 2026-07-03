@@ -1,0 +1,25 @@
+# Dependabot keeps the SHA-pinned actions, the digest-pinned Docker bases, and
+# the npm devDependencies from going stale: pinning without an update loop
+# inverts over time (CVE fixes never arrive unless someone remembers to bump
+# digests by hand). Weekly PRs preserve the pinning discipline — every bump is
+# still a reviewed, pinned change.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Zero runtime dependencies is a design fact (license tripwire enforces
+    # it), so everything here is devDependencies; group the noise.
+    groups:
+      dev-dependencies:
+        patterns:
+          - "*"

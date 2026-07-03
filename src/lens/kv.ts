@@ -23,6 +23,7 @@
  */
 import { result, type Result, type WriteResult } from "./types.ts";
 import { prefixRange } from "../query/range.ts";
+import { assertWellFormedText } from "./catalog.ts";
 import type { Store } from "../adapter/store.ts";
 
 /** One key/value pair from a range scan, decoded to strings. The kv-lens
@@ -59,8 +60,16 @@ export interface Kv {
 
 const utf8 = new TextEncoder();
 const fromUtf8 = new TextDecoder();
-const encode = (s: string): Uint8Array => utf8.encode(s);
 const decode = (b: Uint8Array): string => fromUtf8.decode(b);
+
+/** Encode a string for storage, refusing one that UTF-8 cannot round-trip
+ * (a lone surrogate): distinct malformed strings would otherwise silently
+ * collide on the same bytes — colliding keys, or a value that reads back as a
+ * different string than was stored. */
+const encode = (s: string, what: string): Uint8Array => {
+  assertWellFormedText(s, what);
+  return utf8.encode(s);
+};
 
 /** Build a {@link Kv} lens over a {@link Store} (the kernel's `Database`
  * satisfies it, as does any object that can run a transaction). */
@@ -68,19 +77,19 @@ export function kv(store: Store): Kv {
   return {
     get(key) {
       return store.transact((tx) => {
-        const value = tx.get(encode(key));
+        const value = tx.get(encode(key, "key"));
         return value === undefined ? undefined : decode(value);
       });
     },
     set(key, value) {
       store.transact((tx) => {
-        tx.set(encode(key), encode(value));
+        tx.set(encode(key, "key"), encode(value, "value"));
       });
       return { changed: 1 };
     },
     delete(key) {
       const changed = store.transact((tx) => {
-        const k = encode(key);
+        const k = encode(key, "key");
         const existed = tx.get(k) !== undefined;
         tx.delete(k);
         return existed ? 1 : 0;
@@ -88,14 +97,14 @@ export function kv(store: Store): Kv {
       return { changed };
     },
     range(start, end) {
-      return scan(store, encode(start), encode(end));
+      return scan(store, encode(start, "range start"), encode(end, "range end"));
     },
     prefix(p) {
       // prefixRange computes the [start, end) bounds on bytes so they agree with
       // the kernel's order, and rejects a prefix with no finite end (an empty
       // string). It runs at call time, so a bad prefix fails here, not on a
       // later iteration; the scan itself stays lazy.
-      const { start, end } = prefixRange(encode(p));
+      const { start, end } = prefixRange(encode(p, "prefix"));
       return scan(store, start, end);
     },
   };

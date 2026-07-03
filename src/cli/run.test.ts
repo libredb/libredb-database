@@ -7,16 +7,16 @@
  * stats, get, scan) against real .libredb files, plus usage and error handling.
  */
 import { appendFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, expect, test } from "bun:test";
 
+import { LOCK_SENTINEL } from "../adapter/node-fs.ts";
 import { open } from "../index.ts";
 import { doc } from "../lens/document.ts";
 import { kv } from "../lens/kv.ts";
 import { table } from "../lens/relational.ts";
-import { acquireLock } from "./lock.ts";
 import { run } from "./run.ts";
 
 const dirs: string[] = [];
@@ -227,6 +227,24 @@ test("import rejects a non-string value", () => {
   expect(r.err.join("\n")).toMatch(/object of string values/i);
 });
 
+test("import rejects lone-surrogate keys and values (the kv lens invariant holds for bulk loads)", () => {
+  const path = fixture();
+  // JSON.parse happily produces lone surrogates from \uD800 escapes; without
+  // validation the import would write them through the kernel directly, where
+  // two distinct malformed keys collide on the same UTF-8 bytes.
+  const file = `${path}.surrogate.json`;
+  writeFileSync(file, String.raw`{"bad-\ud800-key": "v"}`);
+  const badKey = cli("import", path, file);
+  expect(badKey.code).toBe(2);
+  expect(badKey.err.join("\n")).toMatch(/lone surrogate/i);
+
+  writeFileSync(file, String.raw`{"ok": "bad-\udfff-value"}`);
+  const badValue = cli("import", path, file);
+  expect(badValue.code).toBe(2);
+  expect(badValue.err.join("\n")).toMatch(/lone surrogate/i);
+  expect(cli("get", path, "ok").code).toBe(1); // nothing was written
+});
+
 test("import with no file is a usage error", () => {
   const r = cli("import", fixture());
   expect(r.code).toBe(2);
@@ -242,20 +260,63 @@ test("import rejects malformed JSON as a usage error (exit 2)", () => {
   expect(r.err.join("\n")).toMatch(/json/i);
 });
 
-test("a write refuses when the database is locked", () => {
+/** A lock file naming a live holder: this very test process. */
+const liveLock = (): string => `${LOCK_SENTINEL}\n${process.pid}\n${hostname()}\nnonce\n`;
+
+test("a write refuses when a live writer holds the lock", () => {
   const path = fixture();
-  writeFileSync(`${path}.lock`, ""); // another writer holds the lock
+  writeFileSync(`${path}.lock`, liveLock()); // a live holder (this process)
   const r = cli("set", path, "k", "v");
   expect(r.code).toBe(1);
   expect(r.err.join("\n")).toMatch(/locked/i);
 });
 
-test("--force overrides a stale libredb lock", () => {
+test("a stale lock (verifiably dead holder) is reclaimed automatically, no --force needed", () => {
   const path = fixture();
-  acquireLock(path, false); // a prior writer's lock, left behind (e.g. it crashed)
+  // A crashed writer's leftover, naming a pid above every default pid_max.
+  writeFileSync(`${path}.lock`, `${LOCK_SENTINEL}\n4194304\n${hostname()}\nnonce\n`);
+  const r = cli("set", path, "k", "v");
+  expect(r.code).toBe(0);
+  expect(cli("get", path, "k").out).toEqual(["v"]);
+  expect(existsSync(`${path}.lock`)).toBe(false);
+});
+
+test("an anonymous (empty) lock is NOT auto-reclaimed; --force removes it", () => {
+  const path = fixture();
+  // An empty lock carries no liveness info — it may even be a concurrent
+  // writer between its exclusive create and its sentinel write, so stealing
+  // it automatically could admit two live writers.
+  writeFileSync(`${path}.lock`, "");
+  expect(cli("set", path, "k", "v").code).toBe(1); // locked
+  const forced = cli("set", path, "k", "v", "--force");
+  expect(forced.code).toBe(0);
+  expect(cli("get", path, "k").out).toEqual(["v"]);
+});
+
+test("--force refuses to remove a live holder's lock", () => {
+  const path = fixture();
+  writeFileSync(`${path}.lock`, liveLock());
+  const r = cli("set", path, "k", "v", "--force");
+  expect(r.code).toBe(1);
+  expect(r.err.join("\n")).toMatch(/alive/i);
+});
+
+test("--force removes a lock from another host (liveness unverifiable)", () => {
+  const path = fixture();
+  writeFileSync(`${path}.lock`, `${LOCK_SENTINEL}\n99999\nsome-other-host\nnonce\n`);
+  expect(cli("set", path, "k", "v").code).toBe(1); // without --force: locked
   const r = cli("set", path, "k", "v", "--force");
   expect(r.code).toBe(0);
   expect(cli("get", path, "k").out).toEqual(["v"]);
+});
+
+test("--force refuses to delete a file that is not a libredb lock", () => {
+  const path = fixture();
+  writeFileSync(`${path}.lock`, "this is the user's own data, not a lock");
+  const r = cli("set", path, "k", "v", "--force");
+  expect(r.code).toBe(1);
+  expect(r.err.join("\n")).toMatch(/not a libredb lock/i);
+  expect(existsSync(`${path}.lock`)).toBe(true); // the user's file is intact
 });
 
 test("set refuses to write a reserved key", () => {
@@ -276,6 +337,40 @@ test("import refuses a reserved key so it cannot corrupt the catalog", () => {
   const r = cli("import", path, file);
   expect(r.code).toBe(2);
   expect(r.err.join("\n")).toMatch(/reserved key/i);
+});
+
+test("get and scan escape control characters so stored data cannot drive the terminal", () => {
+  const path = fixture();
+  cli("set", path, "evil", "\u001b[2Jcleared\u0007bell");
+  const got = cli("get", path, "evil");
+  expect(got.code).toBe(0);
+  expect(got.out).toEqual(["\\x1b[2Jcleared\\x07bell"]); // no raw ESC/BEL reaches the sink
+  const scanned = cli("scan", path, "evil");
+  expect(scanned.out).toEqual(["evil=\\x1b[2Jcleared\\x07bell"]);
+});
+
+test("inspect escapes control characters in namespace names", () => {
+  const dir = mkdtempSync(join(tmpdir(), "libredb-cli-"));
+  dirs.push(dir);
+  const path = join(dir, "evil.libredb");
+  const db = open({ path });
+  // The lens validator rejects ":" and surrogates, but control characters are
+  // legal name bytes — so inspect must escape them on the way to a terminal.
+  doc(db, "evil\u001b[2Jns").put("d1", {});
+  db.close();
+  const r = cli("inspect", path);
+  expect(r.code).toBe(0);
+  expect(r.out.join("\n")).toContain("evil\\x1b[2Jns");
+  expect(r.out.join("\n")).not.toContain("\u001b");
+  // --raw opts out, matching get/scan.
+  expect(cli("inspect", path, "--raw").out.join("\n")).toContain("evil\u001b[2Jns");
+});
+
+test("--raw prints the stored bytes verbatim for callers that want them", () => {
+  const path = fixture();
+  cli("set", path, "evil", "\u001b[31mred");
+  const r = cli("get", path, "evil", "--raw");
+  expect(r.out).toEqual(["\u001b[31mred"]);
 });
 
 test("a read recovers a crash-torn file in memory without changing the bytes on disk", () => {

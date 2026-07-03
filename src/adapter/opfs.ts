@@ -52,9 +52,19 @@ export function opfsFileSystem(handle: SyncAccessHandle): FileSystem {
           return handle.getSize();
         },
         read(offset, length) {
+          // read() may return fewer bytes than asked even when more exist (the
+          // returned count exists precisely because short reads are legal), so
+          // loop until the request is filled or the handle reports end-of-file.
+          // Without the loop a transient short read during recovery would look
+          // like a torn tail and truncate committed data. Mirrors append().
           const buffer = new Uint8Array(length);
-          const read = handle.read(buffer, { at: offset });
-          return buffer.subarray(0, read);
+          let filled = 0;
+          while (filled < length) {
+            const count = handle.read(buffer.subarray(filled), { at: offset + filled });
+            if (count === 0) break; // end of file
+            filled += count;
+          }
+          return filled === length ? buffer : buffer.subarray(0, filled);
         },
         append(data) {
           // write() may write fewer bytes than asked (hence the returned count),
@@ -67,6 +77,11 @@ export function opfsFileSystem(handle: SyncAccessHandle): FileSystem {
           }
         },
         fsync() {
+          // The strongest durability point OPFS offers. Note the honest gap:
+          // the spec does not promise flush() carries POSIX-fsync strength
+          // against power loss — a committed write survives a tab crash or
+          // browser restart, but a power cut is engine-dependent (see
+          // docs/BROWSER.md and issue #10).
           handle.flush();
         },
         truncate(length) {

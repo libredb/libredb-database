@@ -13,8 +13,9 @@
  */
 import { result, type Result, type WriteResult } from "./types.ts";
 import { prefixRange } from "../query/range.ts";
-import { assertUserName, recordDocument } from "./catalog.ts";
+import { assertUserName, assertWellFormedText, catalogKindAt, recordDocument } from "./catalog.ts";
 import type { Store } from "../adapter/store.ts";
+import { LibreDbError } from "../core.ts";
 
 /**
  * Any value JSON can represent: the closure of the primitives under arrays and
@@ -107,6 +108,25 @@ export function matches(document: Doc, predicate: Doc): boolean {
 }
 
 /**
+ * Reject a predicate carrying an explicit `undefined` field value. `undefined`
+ * is not a {@link JsonValue} — no stored document can hold it — but an untyped
+ * JS caller passing `{ status: maybeUndefined }` would otherwise match every
+ * document MISSING the field (deepEqual's undefined === undefined), silently
+ * inverting the query's meaning. Validated eagerly at find()/where() call time,
+ * so the mistake surfaces even against an empty collection.
+ */
+export function assertDefinedPredicate(predicate: Doc): void {
+  for (const key of Object.keys(predicate)) {
+    if (predicate[key] === undefined) {
+      throw new LibreDbError(
+        "INVALID_ARGUMENT",
+        `predicate field ${JSON.stringify(key)} is undefined — not a JSON value; omit the field to not filter by it`,
+      );
+    }
+  }
+}
+
+/**
  * The kernel key for one document: `<collection>:<id>`, UTF-8 encoded (DESIGN.md
  * section 6.1). Prefixing every id with the collection name is what scopes a
  * collection to a contiguous byte range, so a later `<collection>:` prefix scan
@@ -158,13 +178,53 @@ export interface DocCollection {
 /**
  * Build a {@link DocCollection} handle scoped to `collection` over a
  * {@link Store} (the kernel's `Database` satisfies it, as does any object that
- * can run a transaction).
+ * can run a transaction). Refuses a name the catalog records as a RELATIONAL
+ * table: its rows are schema-validated, and a doc() handle would write around
+ * that validation and break the catalog's faithful-view contract — use
+ * {@link import("./relational.ts").table} for it instead.
  */
 export function doc(store: Store, collection: string): DocCollection {
-  // A collection name may not intrude on the reserved catalog namespace
-  // (DESIGN.md section 6.3) — reject it loudly before any key is derived.
+  // A collection name may not intrude on the reserved catalog namespace and
+  // must be isolatable in the key layout — reject it before any key is derived.
   assertUserName(collection);
+  // The relational-kind guard runs INSIDE each operation's own transaction
+  // (lazily, memoized after the first pass) rather than here: a construction-
+  // time check would need a transaction of its own, which would break the
+  // established pattern of building a handle inside a transact() body.
+  let checked = false;
+  const ensure = (read: (key: Uint8Array) => Uint8Array | undefined): void => {
+    if (checked) return;
+    const kind = catalogKindAt(read, collection);
+    if (kind === "relational") {
+      throw new LibreDbError(
+        "INVALID_ARGUMENT",
+        `${JSON.stringify(collection)} is a relational table; use table() instead of doc()`,
+      );
+    }
+    // Memoize ONLY the settled state. Once cataloged as a document collection
+    // the name can never become relational (recordRelational refuses a name of
+    // another kind), so the check is done for good. An UNCATALOGED name must
+    // keep re-checking: a later table() could catalog it as relational, and a
+    // handle whose guard went quiet on a stale "uncataloged" answer would
+    // write around that table's schema validation.
+    if (kind === "document") checked = true;
+  };
+  return collectionHandle(store, collection, ensure);
+}
 
+/**
+ * The unguarded collection builder behind {@link doc}. The relational lens uses
+ * it directly: a table IS this handle plus schema validation, so the "is this
+ * name relational?" guard that protects doc() callers must not apply there.
+ * `ensure` (when given) runs at the start of every operation's transaction —
+ * doc() uses it to refuse a relational table's name without needing its own
+ * transaction at construction time.
+ */
+export function collectionHandle(
+  store: Store,
+  collection: string,
+  ensure?: (read: (key: Uint8Array) => Uint8Array | undefined) => void,
+): DocCollection {
   // The byte range covering every `<collection>:` key. prefixRange computes the
   // [start, end) bound on raw bytes so it agrees with the kernel's order, which
   // is what makes the colon a sound collection boundary (a sibling like "users2"
@@ -181,6 +241,7 @@ export function doc(store: Store, collection: string): DocCollection {
   const scan = (keep: (document: Doc) => boolean): Result<DocEntry> =>
     result(() =>
       store.transact((tx) => {
+        ensure?.((key) => tx.get(key));
         const rows: DocEntry[] = [];
         for (const entry of tx.getRange(start, end)) {
           const document = decodeDoc(entry.value);
@@ -197,7 +258,11 @@ export function doc(store: Store, collection: string): DocCollection {
 
   return {
     put(id, document) {
+      // An id with a lone surrogate cannot round-trip through the UTF-8 key
+      // encoding — two distinct malformed ids would silently share one key.
+      assertWellFormedText(id, "document id");
       store.transact((tx) => {
+        ensure?.((key) => tx.get(key));
         // Register this collection in the catalog on its first write (DESIGN.md
         // section 6.3). Idempotent and inside the write's own transaction, so the
         // registration and the document are durable together. A table's inserts
@@ -209,7 +274,13 @@ export function doc(store: Store, collection: string): DocCollection {
       return { changed: 1 };
     },
     get(id) {
+      // Validated like put(): a lone-surrogate id encodes to the replacement
+      // character's bytes, which would silently ALIAS a document legitimately
+      // stored under "\ufffd" — reading (and below, deleting) someone else's
+      // document instead of failing loudly.
+      assertWellFormedText(id, "document id");
       return store.transact((tx) => {
+        ensure?.((key) => tx.get(key));
         const bytes = tx.get(keyOf(collection, id));
         return bytes === undefined ? undefined : decodeDoc(bytes);
       });
@@ -217,7 +288,9 @@ export function doc(store: Store, collection: string): DocCollection {
     delete(id) {
       // Read-before-delete in one transaction: the kernel's delete is a silent
       // no-op on a missing key, so this is how the lens tells 1 from 0 changes.
+      assertWellFormedText(id, "document id"); // same aliasing hazard as get()
       const changed = store.transact((tx) => {
+        ensure?.((key) => tx.get(key));
         const k = keyOf(collection, id);
         const existed = tx.get(k) !== undefined;
         tx.delete(k);
@@ -229,6 +302,9 @@ export function doc(store: Store, collection: string): DocCollection {
       return scan(() => true);
     },
     find(predicate) {
+      // Validated eagerly, so `{ field: undefined }` fails at the call site
+      // instead of silently matching documents that LACK the field.
+      assertDefinedPredicate(predicate);
       return scan((document) => matches(document, predicate));
     },
   };

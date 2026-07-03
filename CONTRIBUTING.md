@@ -48,8 +48,8 @@ typecheck -> format -> lint -> knip -> build -> size -> test
 - **lint** — Oxlint plus a narrow type-aware typescript-eslint pass.
 - **knip** — no unused files, exports, or dependencies.
 - **build** — `tsc` emits `dist/` with isolated declarations.
-- **size** — a byte budget on the shipped entry (`.size-limit.json`); a heavy or non-tree-shakeable
-  import fails it.
+- **size** — byte budgets on the shipped entries, public and browser (`.size-limit.json`); a heavy
+  or non-tree-shakeable import fails it.
 - **test** — `bun test --coverage`. Coverage is held at **100%** line/function/statement
   (`bunfig.toml`); a change that drops coverage fails the gate.
 
@@ -70,7 +70,8 @@ typecheck -> format -> lint -> knip -> build -> size -> test
   `docs: clarify the recovery invariant`.
 - **English only**, and **no emoji** anywhere — code, comments, commits, docs.
 - PRs are **squash-merged**: the individual commit messages are discarded and the PR title becomes the
-  single commit (and the changelog entry), so keep the **PR title** conventional and descriptive.
+  single commit, so keep the **PR title** conventional and descriptive. (The changelog comes from
+  changesets, not commit messages — see below.)
 - If your change is user-facing, add a changeset: `bun run changeset`. This is what generates the
   changelog and version bump at release time.
 - The CI gate mirrors `bun run gate` and runs on every PR, including forks.

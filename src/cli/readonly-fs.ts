@@ -29,7 +29,10 @@ export function readonlyFileSystem(): FileSystem {
           throw new Error("libredb: read-only database; refusing to write");
         },
         fsync() {
-          throw new Error("libredb: read-only database; refusing to write");
+          // Deliberate no-op (not a throw): recovery fsyncs after truncating a
+          // torn tail, and this adapter's truncate is itself a no-op — there is
+          // nothing to flush. A real WRITE can never reach this fsync, because
+          // the commit path appends first and append refuses above.
         },
         truncate() {
           // Deliberate no-op: a read must not alter the file. Recovery still

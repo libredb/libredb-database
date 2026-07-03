@@ -37,12 +37,23 @@ test("size and read reflect the file on disk", () => {
   file.close();
 });
 
-test("append and fsync refuse, so a read can never write", () => {
+test("append refuses, so a read can never write", () => {
   const path = tempFile(new Uint8Array([1]));
   const file = readonlyFileSystem().open(path);
   expect(() => file.append(new Uint8Array([9]))).toThrow(/read-only/i);
-  expect(() => file.fsync()).toThrow(/read-only/i);
   file.close();
+});
+
+test("fsync is a harmless no-op (recovery fsyncs after its no-op truncate)", () => {
+  // The commit path appends BEFORE it fsyncs, and append refuses above, so a
+  // no-op fsync can never silently acknowledge a write. It exists because
+  // recovery fsyncs after truncating a torn tail — a no-op here, too.
+  const original = new Uint8Array([1, 2, 3]);
+  const path = tempFile(original);
+  const file = readonlyFileSystem().open(path);
+  expect(() => file.fsync()).not.toThrow();
+  file.close();
+  expect(new Uint8Array(readFileSync(path))).toEqual(original);
 });
 
 test("truncate is a no-op: the file on disk is left untouched", () => {

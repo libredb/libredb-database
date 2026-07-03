@@ -41,7 +41,9 @@ describe("catalog reserved-prefix policy", () => {
   test("assertUserName accepts a normal name", () => {
     expect(() => assertUserName("users")).not.toThrow();
     expect(() => assertUserName("orders_2026")).not.toThrow();
-    expect(() => assertUserName("")).not.toThrow();
+    // An empty name is no longer a user name: it cannot be isolated in the
+    // <name>:<id> key layout (issue #20), so it throws below instead.
+    expect(() => assertUserName("")).toThrow(/empty/i);
   });
 
   test("assertUserName rejects a name starting with the reserved marker", () => {

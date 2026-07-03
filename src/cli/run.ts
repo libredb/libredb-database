@@ -9,17 +9,18 @@
  * This is open-edge tooling over the public API, not kernel code: it adds no
  * durability logic. Read commands (inspect/stats/get/scan) open through the
  * read-only filesystem adapter so inspecting a file never mutates it. Write
- * commands (set/delete/import) take an advisory lock first, and import commits
- * all keys in one transaction so a bulk load is atomic.
+ * commands (set/delete/import) rely on the kernel's exclusive open lock (a
+ * second writer fails loudly; --force clears a lock whose holder is gone), and
+ * import commits all keys in one transaction so a bulk load is atomic.
  */
 import { readFileSync, statSync } from "node:fs";
 import { parseArgs } from "node:util";
 
-import type { Database } from "../core.ts";
+import { forceUnlock } from "../adapter/node-fs.ts";
+import { LibreDbError, type Database } from "../core.ts";
 import { open } from "../index.ts";
-import { catalog, isReservedKey } from "../lens/catalog.ts";
+import { assertWellFormedText, catalog, isReservedKey } from "../lens/catalog.ts";
 import { kv } from "../lens/kv.ts";
-import { acquireLock } from "./lock.ts";
 import { readonlyFileSystem } from "./readonly-fs.ts";
 
 /** Where the CLI writes its output. One call is one line; the sink adds newlines. */
@@ -29,12 +30,30 @@ interface Io {
 }
 
 /** Everything a command handler needs: the file path, the command's positional
- * arguments (everything after the path), the IO sink, and the `--force` flag. */
+ * arguments (everything after the path), the IO sink, and the flags. */
 interface Ctx {
   path: string;
   args: string[];
   io: Io;
   force: boolean;
+  raw: boolean;
+}
+
+/**
+ * Escape control characters for terminal output. A stored value is arbitrary
+ * user data; printed verbatim it could carry ANSI/OSC sequences that move the
+ * cursor, retitle the window, or write the clipboard of whoever inspects the
+ * file — the classic escape-injection gap in tools that dump untrusted bytes.
+ * Every C0 control (including newline — output here is line-oriented), DEL,
+ * and C1 control renders as its \xNN escape instead. `--raw` opts out.
+ */
+function sanitize(text: string, raw: boolean): string {
+  if (raw) return text;
+  // Control characters in this regex are the entire point (they are what gets
+  // escaped). Only oxlint's no-control-regex fires here, so the suppression
+  // targets it specifically — an eslint-disable would be an unused directive.
+  // oxlint-disable-next-line no-control-regex
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
 }
 
 const encoder = new TextEncoder();
@@ -53,7 +72,8 @@ const USAGE = [
   "  libredb import <path> <file.json>  Bulk-set keys from a JSON object (one atomic commit)",
   "",
   "Options:",
-  "  --force                            Override an existing write lock",
+  "  --force                            Remove a write lock whose holder is no longer alive",
+  "  --raw                              Print values verbatim (default escapes control characters)",
 ].join("\n");
 
 /** Open `path` read-only, run `fn`, and always close — so a read leaves the file
@@ -67,23 +87,27 @@ const withReadDb = <T>(path: string, fn: (db: Database) => T): T => {
   }
 };
 
-/** Take the advisory lock, open `path` for writing, run `fn`, then always close
- * and release — so a crash mid-write cannot leave the lock stranded. */
+/** Open `path` for writing (the kernel takes the exclusive lock), run `fn`,
+ * then always close — which releases the lock. With `force`, a LOCKED open
+ * removes the lock first when its holder is not verifiably alive; a live
+ * holder still refuses, so --force cannot create two live writers. */
 const withWriteDb = <T>(path: string, force: boolean, fn: (db: Database) => T): T => {
-  const lock = acquireLock(path, force);
+  let db: Database;
   try {
-    const db = open({ path });
-    try {
-      return fn(db);
-    } finally {
-      db.close();
-    }
+    db = open({ path });
+  } catch (error) {
+    if (!force || !(error instanceof LibreDbError) || error.code !== "LOCKED") throw error;
+    forceUnlock(path);
+    db = open({ path });
+  }
+  try {
+    return fn(db);
   } finally {
-    lock.release();
+    db.close();
   }
 };
 
-function inspect({ path, io }: Ctx): number {
+function inspect({ path, io, raw }: Ctx): number {
   return withReadDb(path, (db) => {
     const registry = catalog(db);
     io.out(`${path}  ${statSync(path).size} bytes`);
@@ -92,8 +116,12 @@ function inspect({ path, io }: Ctx): number {
       return 0;
     }
     for (const [name, entry] of registry) {
+      // Namespace names are user data too: the lens validator rejects ":" and
+      // surrogates but not control characters, so a name could otherwise carry
+      // terminal escapes into whoever inspects the file. Schemas are safe as
+      // JSON.stringify output (it escapes control characters itself).
       const schema = entry.schema === undefined ? "" : `  ${JSON.stringify(entry.schema)}`;
-      io.out(`  ${name}  ${entry.kind}${schema}`);
+      io.out(`  ${sanitize(name, raw)}  ${entry.kind}${schema}`);
     }
     return 0;
   });
@@ -110,7 +138,7 @@ function stats({ path, io }: Ctx): number {
   });
 }
 
-function get({ path, args, io }: Ctx): number {
+function get({ path, args, io, raw }: Ctx): number {
   const [key] = args;
   if (key === undefined) {
     io.err("missing <key>");
@@ -122,19 +150,21 @@ function get({ path, args, io }: Ctx): number {
       io.err(`key not found: ${key}`);
       return 1;
     }
-    io.out(value);
+    io.out(sanitize(value, raw));
     return 0;
   });
 }
 
-function scan({ path, args, io }: Ctx): number {
+function scan({ path, args, io, raw }: Ctx): number {
   const [prefix] = args;
   if (prefix === undefined) {
     io.err("missing <prefix>");
     return 2;
   }
   return withReadDb(path, (db) => {
-    for (const entry of kv(db).prefix(prefix)) io.out(`${entry.key}=${entry.value}`);
+    for (const entry of kv(db).prefix(prefix)) {
+      io.out(`${sanitize(entry.key, raw)}=${sanitize(entry.value, raw)}`);
+    }
     return 0;
   });
 }
@@ -203,6 +233,18 @@ function importKeys({ path, args, io, force }: Ctx): number {
       io.err(`import: refusing to write a reserved key: ${key}`);
       return 2;
     }
+    try {
+      // The same invariant the kv lens enforces: a lone-surrogate string
+      // cannot round-trip through UTF-8, so two distinct malformed keys would
+      // silently collide on one stored key (and a malformed value would read
+      // back altered). Import writes through the kernel directly (one atomic
+      // transaction), so it must hold the line itself.
+      assertWellFormedText(key, "import key");
+      assertWellFormedText(value, "import value");
+    } catch (error) {
+      io.err(error instanceof Error ? error.message : String(error));
+      return 2;
+    }
     pairs.push([key, value]);
   }
   return withWriteDb(path, force, (db) => {
@@ -230,12 +272,16 @@ const commands = new Map<string, (ctx: Ctx) => number>([
 
 export function run(argv: string[], io: Io): number {
   let positionals: string[];
-  let values: { help?: boolean; force?: boolean };
+  let values: { help?: boolean; force?: boolean; raw?: boolean };
   try {
     const parsed = parseArgs({
       args: argv,
       allowPositionals: true,
-      options: { help: { type: "boolean", short: "h" }, force: { type: "boolean" } },
+      options: {
+        help: { type: "boolean", short: "h" },
+        force: { type: "boolean" },
+        raw: { type: "boolean" },
+      },
     });
     positionals = parsed.positionals;
     values = parsed.values;
@@ -263,7 +309,7 @@ export function run(argv: string[], io: Io): number {
   }
 
   try {
-    return handler({ path, args: positionals.slice(2), io, force: values.force === true });
+    return handler({ path, args: positionals.slice(2), io, force: values.force === true, raw: values.raw === true });
   } catch (error) {
     io.err(error instanceof Error ? error.message : String(error));
     return 1;

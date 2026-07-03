@@ -169,7 +169,11 @@ interface Database {
   close(): void;
 }
 
-const open: (options?: { path?: string; fs?: FileSystem }) => Database;
+const open: (options?: {
+  path?: string;
+  fs?: FileSystem;
+  onRecovery?: (info: RecoveryInfo) => void;  // reports a truncated torn tail
+}) => Database;
 ```
 
 With a `path`, the database is file-backed and durable. Without one, it is purely
@@ -340,8 +344,17 @@ time comes, without the three-box machinery becoming mandatory.
 Each committed transaction is one length-framed, checksummed record:
 
 ```
-  record = [ u32 payloadLength ] [ u32 crc32(payload) ] [ payload ]
-                  4 bytes              4 bytes
+  file   = [ 4-byte magic "LRDB" ] [ u16 formatVersion ] [ u16 reserved ]   8-byte file header
+           ...followed by records, back to back
+
+  record = [ u32 payloadLength ] [ u32 crc32(length bytes) ] [ u32 crc32(payload) ] [ payload ]
+                  4 bytes               4 bytes                     4 bytes
+
+  The record header carries a checksum of itself (the length field), so
+  recovery can tell a trustworthy length from a damaged one. Files written by
+  v0.1.x predate the file header and use 8-byte record headers
+  [ u32 payloadLength ][ u32 crc32(payload) ]; they still open, and keep that
+  legacy framing on appends (a file's format cannot change mid-file).
 
   payload = one or more ops, back to back:
       set    = [ u8 1 ] [ u32 keyLen ] [ key ] [ u32 valLen ] [ value ]
@@ -354,8 +367,10 @@ A real record from a live file, decoded (the first write of a relational table -
 its schema, before any row):
 
 ```
+  4c 52 44 42 00 01 00 00             file header: magic "LRDB", format version 1
   00 00 00 9d                         payloadLength = 157
-  ea 44 78 48                         crc32
+  af fa 30 e5                         crc32 of the header's own length bytes
+  ea 44 78 48                         crc32 of the payload
   01                                  op = SET
   00 00 00 16                         keyLen = 22
   00 6c 69 62 72 65 64 62 3a ...      key = "\x00libredb:catalog:users"
@@ -375,9 +390,13 @@ The fsync happens *before* the in-memory commit becomes visible:
    on disk, survives a crash         now visible in memory
 ```
 
-So when `transact()` returns, the change is on disk. If the append fails, the code
-throws with memory and disk still agreeing on the *prior* state. A read-only
-transaction writes nothing to the log.
+So when `transact()` returns, the change is on disk. If the append or fsync
+fails, `transact()` throws a typed error (code FAILED) with memory keeping the
+prior state -- and the database latches: every later `transact()` throws FAILED
+until it is closed and reopened. Appending past a possibly-torn tail could let
+the next recovery silently discard later, acknowledged commits; refusing
+further writes is what keeps "a returned transact() is durable" true. A
+read-only transaction writes nothing to the log.
 
 ### Recovery and torn writes
 
@@ -387,10 +406,13 @@ Because the log is append-only and fsynced, a crash can only ever damage the
 ```
   recover(file):
       replay each intact record in order, rebuilding the sorted array
-      stop at the first record that is:
-          - torn   (header promises more bytes than exist), or
-          - corrupt (crc32 of payload does not match)
-      truncate the file at that point   # next append starts from a clean boundary
+      a TORN TAIL -- a header promising more bytes than exist, or the FINAL
+      record's payload failing its crc32 -- is truncated away and fsynced,
+      and reported through the open option onRecovery({ truncatedBytes })
+      a payload crc32 failure with intact data AFTER it, or a v1 record
+      header failing its own checksum, is CORRUPTION: recovery throws
+      CORRUPT_WAL and leaves the file untouched -- it never truncates
+      committed records to get past damage
 ```
 
 ```
@@ -610,7 +632,10 @@ The kernel never calls `node:fs` directly. Every byte to disk goes through one
 small interface:
 
 ```ts
-interface FileSystem { open(path: string): WalFile; }
+interface FileSystem {
+  open(path: string): WalFile;
+  lock?(path: string): () => void;  // optional exclusive lock; a second open throws LOCKED
+}
 
 interface WalFile {
   size(): number;
@@ -662,7 +687,7 @@ what reopening each decision would entail, not a committed roadmap.
 | Working set         | the whole store lives in memory      | bounded by RAM, not disk                 |
 | Log growth          | append-only, no compaction           | the file grows with write *history*      |
 | Multi-key atomicity | lenses auto-commit per operation     | for atomic multi-writes use `transact`   |
-| Durability edge     | no directory fsync on first create   | see 10.3 -- a known hardening gap        |
+| Durability edge     | browser OPFS `flush()` is weaker than POSIX fsync | power-loss durability in the browser is engine-dependent |
 
 None of these are hidden. The cost is concentrated where it is cheapest to reason
 about, and the throughline is that **every one of them could be addressed above the
@@ -717,16 +742,17 @@ cleanly into two kinds of work.
 These close real correctness gaps on the existing design. They are tracked as
 known limitations, not new directions:
 
-- **Directory fsync on first file creation.** Creating a file durably requires
-  fsyncing the *directory*, not just the file -- otherwise a power loss can lose
-  the directory entry for a freshly created database. Currently not done.
+- **Directory fsync on first file creation** -- done. The `node:fs` adapter
+  fsyncs the parent directory when it creates the database file, so a power
+  loss can no longer lose the directory entry of a freshly created database.
 - **WAL compaction / checkpointing.** Today the log only grows (section 5). A
   checkpoint -- fold the committed state into a compact snapshot, then trim the
   log -- bounds file size and speeds recovery. This is the single most important
   hardening item for any long-lived database.
-- **Short-read recovery robustness.** A note carried out of the crash-recovery
-  work: make sure a partial read at the tail is always treated as a torn record,
-  never as data.
+- **Short-read recovery robustness** -- done, and stricter than first sketched:
+  a read that returns fewer bytes than the file holds throws a typed
+  INCOMPLETE_READ error instead of being treated as data or as a torn tail, so
+  a transient IO fault can never cause recovery to truncate committed records.
 
 **Scaling features (each reopens a locked decision).**
 These are not on the v1 path and would each force a deliberate decision to be
@@ -769,7 +795,11 @@ by staying small and correct, not by absorbing every feature.
 | `lens/document.ts`    | lens         | JSON documents, by-id CRUD, scan and find            |
 | `lens/relational.ts`  | lens         | schema-validated tables, where/select/join           |
 | `lens/catalog.ts`     | edge         | reserved namespace, registry, validate-on-reopen     |
-| `index.ts`            | public        | the npm export surface                               |
+| `adapter/node-fs.ts`  | edge         | the real `node:fs` WAL adapter (fd reads, directory fsync, lock file) |
+| `adapter/opfs.ts`     | edge         | the browser OPFS WAL adapter                         |
+| `cli/`                | tooling      | the libredb CLI (inspect, stats, get, scan, set, delete, import) and the read-only filesystem |
+| `index.ts`            | public       | the Node npm export surface                          |
+| `browser.ts`          | public       | the browser export surface (no Node built-ins)       |
 | `sim/`                | test harness | simulated filesystem and crash-recovery oracle (DST) |
 
 ---
@@ -793,7 +823,7 @@ Putting it together -- what happens when you insert a row into a file-backed tab
                 append + fsync                    # durable here
                 committed = working               # visible here
 
-  on disk (demo.libredb), now two records:
+  on disk (demo.libredb), now an 8-byte file header followed by two records:
       [ \x00libredb:catalog:users -> {relational, schema} ]
       [ users:1 -> {"id":"1","name":"Ada","age":36,"active":true} ]
 

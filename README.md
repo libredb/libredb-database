@@ -17,7 +17,7 @@
 [![types: included](https://img.shields.io/badge/types-included-blue.svg)](https://www.typescriptlang.org/)
 [![dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](./package.json)
 [![bundle size](https://img.shields.io/bundlephobia/minzip/@libredb/libredb)](https://bundlephobia.com/package/@libredb/libredb)
-[![status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](#project-status--roadmap)
+[![status: early beta](https://img.shields.io/badge/status-early%20beta-orange.svg)](#project-status--roadmap)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/libredb/libredb-database)
 
 LibreDB is a small, readable, embeddable, multi-model database written in TypeScript. It is built on
@@ -25,8 +25,8 @@ one idea: a database can be powerful and still be understood by opening its sour
 key-value core handles durability and transactions; key-value, document, and relational APIs are thin
 *lenses* over that one core — not three separate engines. It runs in-memory for tests or file-backed
 for durability, ships **zero runtime dependencies**, and proves its crash recovery with deterministic
-simulation testing. Today it is pre-alpha, aimed at test and development environments — small enough to
-learn how a database actually works, and serious enough to grow into more.
+simulation testing. Today it is an early beta, aimed at test and development environments — small
+enough to learn how a database actually works, and serious enough to grow into more.
 
 ## Highlights
 
@@ -34,13 +34,14 @@ learn how a database actually works, and serious enough to grow into more.
   key-value engine (FoundationDB-style), not three engines bolted together.
 - **Multi-model** — raw strings, JSON documents, and schema-validated typed tables in the same
   database, even the same file.
-- **Readable by design** — the kernel is under 600 lines; open the source and learn how a database
+- **Readable by design** — the kernel is one file of under a thousand lines, roughly half of it
+  explanatory prose; open the source and learn how a database
   actually works.
 - **Embeddable, zero dependencies** — `bun add @libredb/libredb` and go; nothing else to install or
   run.
 - **In-memory or durable** — `open()` for tests, `open({ path })` for a crash-safe, WAL-backed,
   fsync-on-commit file.
-- **TypeScript-native** — full types shipped, ESM-only, tree-shakeable, under 4 kB min+brotli.
+- **TypeScript-native** — full types shipped, ESM-only, tree-shakeable, under 6 kB min+brotli.
 - **Crash recovery you can trust** — 100% line coverage on the core, plus deterministic simulation
   testing that tortures the write-ahead log under a simulated crashing filesystem.
 - **Nothing hidden** — queries are plain in-engine scans, errors surface, and costs are obvious (O(n)
@@ -152,12 +153,15 @@ npx libredb import data.libredb seed.json # bulk-set from a JSON object, atomica
 ```
 
 Read commands open the file read-only, so inspection never mutates it. Write commands take an
-advisory `<path>.lock` to refuse a second concurrent writer. Use `--force` only to clear a stale
-lock left by a crashed writer: the lock is advisory and LibreDB is single-process, so two writers
-that force at the same time can still race and corrupt the file.
+advisory `<path>.lock` to refuse a second concurrent writer. A lock left by a writer that crashed on
+the same host is reclaimed automatically — no flag needed. Use `--force` only for a lock whose
+holder cannot be verified (an anonymous lock or one written on another host); it refuses a holder
+that is verifiably alive, so it cannot knowingly admit two live writers. The remaining risk is the
+unverifiable case: a live writer on another machine sharing the file can still be forced past, which
+can corrupt the file.
 
 Prefer a standalone binary with no Node or Bun installed? Each release attaches self-contained
-executables (Linux, macOS, Windows; x64 and arm64) with `.sha256` checksums on its
+executables (Linux and macOS on x64 and arm64; Windows on x64) with `.sha256` checksums on its
 [GitHub Release](https://github.com/libredb/libredb-database/releases). Or build one locally with
 `bun run compile`.
 
@@ -247,10 +251,11 @@ the store only through one narrow `transact` port. For the full tour, read
 
 **Do not use it (yet) when you need:**
 
-- A hardened production datastore at scale — it is **pre-alpha**; today's beachhead is test/dev.
+- A hardened production datastore at scale — it is an **early beta**; today's beachhead is test/dev.
 - Secondary indexes or a query planner — queries are O(n) scans by design in v1 (on the roadmap).
-- Concurrent multi-process access, replication, or a networked client/server — it is embedded and
-  in-process.
+- Concurrent multi-process access, replication, or a networked client/server — it is embedded,
+  in-process, and strictly single-writer (a second `open()` on the same file is refused by an
+  exclusive lock rather than silently corrupting it).
 - SQL wire compatibility or an existing-driver ecosystem.
 
 These limits are deliberate v1 scope, not hidden gaps — LibreDB's strength comes from what it refuses.
@@ -264,17 +269,36 @@ See the [Manifesto](./MANIFESTO.md).
 </picture>
 
 A transaction that returns has been written to a length-framed, CRC-32-checksummed write-ahead log and
-`fsync`'d *before* the commit becomes visible — so a committed write survives a crash, and a crash can
-only ever damage the last, un-fsync'd record (which recovery detects and truncates). This is not just
-asserted: the kernel's crash/recovery path is proven by **deterministic simulation testing**, running
-the real engine against a seeded in-memory filesystem that tears, corrupts, and crashes the log on
-command, then checking that recovery is always a valid committed prefix.
+`fsync`'d *before* the commit becomes visible — so on a healthy disk a committed write survives a
+crash, and a crash can only ever damage the last, un-fsync'd record (which recovery detects,
+truncates, and reports). The failure modes *outside* the clean-crash model are handled explicitly, not
+assumed away: a failed append/fsync latches the database instead of writing past a torn record, a
+second writer is refused by an exclusive open lock, a file that is not a LibreDB database is refused
+untouched (the `LRDB` header), mid-log corruption refuses to open rather than silently truncating, and
+a short read is an IO error, never data loss. This is not just asserted: the crash/recovery path is
+proven by **deterministic simulation testing** — the real engine against a seeded in-memory filesystem
+that tears, corrupts, errors, and crashes the log on command — plus a binary round-trip fuzz.
 
 ```sh
-bun run test    # includes a bounded 50-seed DST run
+bun run test    # includes a bounded 50-seed DST run and the fault-injection suites
 ```
 
-The full durability and DST walkthrough is in [`docs/RELIABILITY.md`](./docs/RELIABILITY.md).
+The precise durability contract and the DST walkthrough are in
+[`docs/RELIABILITY.md`](./docs/RELIABILITY.md).
+
+## Performance envelope
+
+Honesty about scale (comprehension is the budget in v1, not throughput):
+
+- **The whole store lives in memory** as one sorted array; the file on disk is the append-only log
+  that rebuilds it on open. The practical ceiling is data that comfortably fits in RAM — the test/dev
+  beachhead, not a server working set.
+- **Each `transact()` copies the store** before applying writes, so a per-row auto-commit loop is
+  quadratic in store size and will look hung on large seeds. **Wrap bulk loads in one `transact()`**
+  (or use `libredb import`, which already does): one copy, one fsync, one record for the whole batch.
+- **No secondary indexes**: a `find`/`where` is an O(n) scan by design in v1.
+- **The log grows without bound** until compaction lands (tracked in
+  [#12](https://github.com/libredb/libredb-database/issues/12)); reopening replays the whole log.
 
 ## Documentation
 
@@ -293,14 +317,19 @@ The full durability and DST walkthrough is in [`docs/RELIABILITY.md`](./docs/REL
 
 ## Project status & roadmap
 
-LibreDB is **pre-alpha** (`0.0.x`). The architecture is in place and every line of the core is tested,
-but the API may still change and it is not yet meant for production data.
+LibreDB is an **early beta** (`0.1.x`). The architecture is in place, every line of the core is
+tested, and the durability contract above is enforced — but the API may still change before 1.0, and
+the recommended home is still test/dev data.
 
-- **Done:** the ordered key-value kernel (transactions, WAL, crash recovery); the key-value, document,
-  and relational lenses; the self-describing catalog; the deterministic simulation testing harness;
-  100% line/function/statement coverage on the core.
+- **Done:** the ordered key-value kernel (transactions, WAL with a versioned on-disk header, crash
+  recovery that refuses corruption and foreign files, an IO-failure latch, an exclusive open lock);
+  the key-value, document, and relational lenses; the self-describing catalog; typed `LibreDbError`
+  codes; the DST harness with IO-fault injection and binary fuzz; 100% line/function/statement
+  coverage.
 - **Next:** secondary indexes and a richer query surface; more query operators; additional lenses;
-  production-hardening milestones (directory fsync on first create, WAL compaction/checkpointing).
+  WAL compaction/checkpointing
+  ([#12](https://github.com/libredb/libredb-database/issues/12)); real-browser OPFS verification
+  ([#10](https://github.com/libredb/libredb-database/issues/10)).
 
 ## The LibreDB family
 
