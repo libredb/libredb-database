@@ -293,17 +293,18 @@ test("a file written by a NEWER format version is refused with UNSUPPORTED_VERSI
   expect(errorFrom(() => openNode({ path })).code).toBe("UNSUPPORTED_VERSION");
 });
 
-test("a header torn mid-write (first commit interrupted) restarts the database from empty", () => {
-  const path = tempPath("torn-header");
-  writeFileSync(path, Uint8Array.from([0x4c, 0x52])); // "LR": a magic prefix, cut short
-  const truncations: number[] = [];
-  const db = openNode({ path, onRecovery: (info) => truncations.push(info.truncatedBytes) });
-  expect(truncations).toEqual([2]); // the torn header was reported, not silent
-  db.transact((tx) => tx.set(bytes(1), bytes(10)));
-  db.close();
-  const reopened = openNode({ path });
-  expect(reopened.transact((tx) => tx.get(bytes(1)))).toEqual(bytes(10));
-  reopened.close();
+test("a file shorter than the header is refused untouched, even when it shares magic bytes", () => {
+  // "LR" might be the prefix a torn first-ever append left, or a 2-byte
+  // foreign file. Identity is ambiguous, so recovery refuses instead of
+  // adopting (and truncating) the file — the cost is that a crash inside the
+  // first 8 bytes of a brand-new database's first commit needs a manual
+  // delete, and nothing in that file was ever acknowledged.
+  for (const contents of [[0x4c], [0x4c, 0x52], [0x4c, 0x52, 0x44, 0x42], [0x61, 0x62]]) {
+    const path = tempPath(`short-${contents.length}-${contents[0]}`);
+    writeFileSync(path, Uint8Array.from(contents));
+    expect(errorFrom(() => openNode({ path })).code).toBe("NOT_A_DATABASE");
+    expect([...new Uint8Array(readFileSync(path))]).toEqual(contents); // untouched
+  }
 });
 
 // --- issue #22: corruption classification ---
@@ -383,7 +384,10 @@ test("a partially-written append latches the database; the torn tail cannot pois
   db.transact((tx) => tx.set(bytes(1), bytes(10))); // commit A: durable
 
   file.failAppendAfter = 5; // commit B tears after 5 bytes, then ENOSPC
-  expect(() => db.transact((tx) => tx.set(bytes(2), bytes(20)))).toThrow(/ENOSPC/);
+  const commitError = errorFrom(() => db.transact((tx) => tx.set(bytes(2), bytes(20))));
+  expect(commitError.code).toBe("FAILED"); // typed, with the adapter error as cause
+  expect(commitError.message).toMatch(/ENOSPC/);
+  expect((commitError.cause as Error).message).toMatch(/ENOSPC/);
 
   // The database is latched: it refuses commit C outright instead of appending
   // it after the torn bytes (where the next recovery would destroy it).

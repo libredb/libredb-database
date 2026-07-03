@@ -253,14 +253,26 @@ test("a write refuses when a live writer holds the lock", () => {
   expect(r.err.join("\n")).toMatch(/locked/i);
 });
 
-test("a stale lock (dead holder) is reclaimed automatically, no --force needed", () => {
+test("a stale lock (verifiably dead holder) is reclaimed automatically, no --force needed", () => {
   const path = fixture();
-  // A crashed writer's leftover: an empty lock file carries no live holder.
-  writeFileSync(`${path}.lock`, "");
+  // A crashed writer's leftover, naming a pid above every default pid_max.
+  writeFileSync(`${path}.lock`, `${LOCK_SENTINEL}\n4194304\n${hostname()}\nnonce\n`);
   const r = cli("set", path, "k", "v");
   expect(r.code).toBe(0);
   expect(cli("get", path, "k").out).toEqual(["v"]);
   expect(existsSync(`${path}.lock`)).toBe(false);
+});
+
+test("an anonymous (empty) lock is NOT auto-reclaimed; --force removes it", () => {
+  const path = fixture();
+  // An empty lock carries no liveness info — it may even be a concurrent
+  // writer between its exclusive create and its sentinel write, so stealing
+  // it automatically could admit two live writers.
+  writeFileSync(`${path}.lock`, "");
+  expect(cli("set", path, "k", "v").code).toBe(1); // locked
+  const forced = cli("set", path, "k", "v", "--force");
+  expect(forced.code).toBe(0);
+  expect(cli("get", path, "k").out).toEqual(["v"]);
 });
 
 test("--force refuses to remove a live holder's lock", () => {

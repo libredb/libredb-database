@@ -8,7 +8,7 @@
       "node:os",
       "node:path"
     ],
-    "limit": "5 kB"
+    "limit": "6 kB"
   },
   {
     "name": "browser entry (min+brotli)",

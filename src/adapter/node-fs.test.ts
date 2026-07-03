@@ -114,12 +114,34 @@ test("a stale lock (dead pid) is reclaimed and locking proceeds", () => {
   release();
 });
 
-test("a legacy sentinel-only lock (no owner recorded) is reclaimed", () => {
+test("a legacy sentinel-only lock (no owner recorded) is NOT auto-reclaimed", () => {
+  // It may belong to a live 0.1.x CLI (that format recorded no pid), or be a
+  // concurrent lock() caught between create and write. No liveness info means
+  // no automatic stealing; forceUnlock is the explicit escape hatch.
   const path = tempPath("db");
   writeFileSync(`${path}.lock`, `${LOCK_SENTINEL}\n`); // v0.1.x CLI format
-  const release = nodeFileSystem().lock?.(path) as () => void;
-  release();
+  let caught: unknown;
+  try {
+    nodeFileSystem().lock?.(path);
+  } catch (error) {
+    caught = error;
+  }
+  expect((caught as LibreDbError).code).toBe("LOCKED");
+  forceUnlock(path);
   expect(existsSync(`${path}.lock`)).toBe(false);
+});
+
+test("a file that merely starts with the sentinel text is foreign, not a lock", () => {
+  const path = tempPath("db");
+  writeFileSync(`${path}.lock`, `${LOCK_SENTINEL}smith\ndata\n`); // "libredb-locksmith..."
+  let caught: unknown;
+  try {
+    forceUnlock(path); // must refuse: exact first-line match required
+  } catch (error) {
+    caught = error;
+  }
+  expect((caught as LibreDbError).code).toBe("LOCKED");
+  expect(readFileSync(`${path}.lock`, "utf8")).toBe(`${LOCK_SENTINEL}smith\ndata\n`);
 });
 
 test("a lock held on another host is not reclaimed (liveness unverifiable)", () => {
@@ -184,15 +206,17 @@ test("isStaleLock: a vanished lock file counts as stale (retryable)", () => {
   expect(isStaleLock(join(tmpdir(), "libredb-vanished-xyz.lock"))).toBe(true);
 });
 
-test("isStaleLock: empty stray, dead holder, and legacy sentinel are stale; live and foreign are not", () => {
+test("isStaleLock: ONLY a verifiably dead holder is stale", () => {
   const path = tempPath("db");
   const lockPath = `${path}.lock`;
-  writeFileSync(lockPath, "");
-  expect(isStaleLock(lockPath)).toBe(true);
   writeFileSync(lockPath, deadLock());
-  expect(isStaleLock(lockPath)).toBe(true);
+  expect(isStaleLock(lockPath)).toBe(true); // same host, pid verifiably gone
+  // Everything without verified death is non-stale: anonymity carries no
+  // liveness info (and could be a concurrent create-then-write in flight).
+  writeFileSync(lockPath, "");
+  expect(isStaleLock(lockPath)).toBe(false);
   writeFileSync(lockPath, `${LOCK_SENTINEL}\n`);
-  expect(isStaleLock(lockPath)).toBe(true);
+  expect(isStaleLock(lockPath)).toBe(false);
   writeFileSync(lockPath, liveLock());
   expect(isStaleLock(lockPath)).toBe(false);
   writeFileSync(lockPath, otherHostLock());

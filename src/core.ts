@@ -672,23 +672,24 @@ function recover(file: WalFile): Recovery {
   }
   if (size === 0) return { entries: [], needsHeader: true, legacy: false, truncatedBytes: 0 };
 
-  // A torn first append can only leave a PREFIX of the exact 8 header bytes
-  // this kernel writes (magic + version + reserved), so the recognition test
-  // compares against all of them — "LRDB" followed by anything else is a
-  // foreign file, not a torn header.
-  const expectedHeader = encodeFileHeader();
-  const headerPrefix = Math.min(log.length, FILE_HEADER);
-  const hasHeaderPrefix = log.subarray(0, headerPrefix).every((byte, i) => byte === expectedHeader[i]);
-  const hasMagic = log.length >= MAGIC.length && MAGIC.every((byte, i) => byte === log[i]);
-  if (hasHeaderPrefix && log.length < FILE_HEADER) {
-    // A torn header: the very first commit (header + record in one append)
-    // was interrupted before the header finished. Nothing was ever
-    // acknowledged, so start the database over from empty.
-    file.truncate(0);
-    file.fsync();
-    return { entries: [], needsHeader: true, legacy: false, truncatedBytes: log.length };
+  // A file shorter than the 8-byte header cannot be identified: it might be
+  // the prefix a torn first-ever append left ("LR..."), or it might be a tiny
+  // foreign file that happens to share those bytes. When identity is
+  // ambiguous, destroying is never the answer — refuse, untouched. (The cost
+  // is that a crash inside the first 8 bytes of a database's first-ever
+  // commit needs the user to delete the file by hand; nothing in it was ever
+  // acknowledged.)
+  if (log.length < FILE_HEADER) {
+    throw new LibreDbError("NOT_A_DATABASE", "file is too short to be a libredb database; refusing to touch it");
   }
-  if (hasMagic && log.length >= FILE_HEADER) {
+  // The 4-byte magic selects the v1 path. The version bytes then gate it
+  // further: a foreign file that begins with "LRDB" but carries junk where
+  // the version belongs is refused as UNSUPPORTED_VERSION — also untouched.
+  // (A foreign file matching the ENTIRE 8-byte header is byte-for-byte
+  // indistinguishable from a real empty database; no recognizer can separate
+  // identical bytes.)
+  const hasMagic = MAGIC.every((byte, i) => byte === log[i]);
+  if (hasMagic) {
     const fileVersion = ((log[4] as number) << 8) | (log[5] as number);
     if (fileVersion !== FORMAT_VERSION) {
       throw new LibreDbError(
@@ -904,7 +905,15 @@ export const open: Open = (options) => {
             log.append(journal);
           } catch (error) {
             failed = true;
-            throw error;
+            // Typed like every other kernel failure — callers branch on the
+            // stable FAILED code; the adapter's error rides along as `cause`
+            // (and in the message, for logs that only capture text).
+            throw new LibreDbError(
+              "FAILED",
+              `commit failed to reach the disk (${error instanceof Error ? error.message : String(error)}); ` +
+                `close and reopen to recover`,
+              { cause: error },
+            );
           }
         }
         committed = working;

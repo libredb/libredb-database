@@ -53,12 +53,29 @@ export const CATALOG_PREFIX: string = `${RESERVED_MARKER}libredb:catalog:`;
  * true. Shared by the kv lens (keys) and the document lens (ids and names).
  */
 export function assertWellFormedText(text: string, what: string): void {
-  if (!text.isWellFormed()) {
-    throw new LibreDbError(
-      "INVALID_ARGUMENT",
-      `${what} ${JSON.stringify(text)} contains a lone surrogate and cannot round-trip through UTF-8`,
-    );
+  // A hand-rolled scan instead of String.prototype.isWellFormed(): this file
+  // ships in the browser entry, and isWellFormed is too new to assume on every
+  // engine the bundle may reach. The scan is the same O(n) as the UTF-8 encode
+  // that follows it.
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = text.charCodeAt(i + 1); // NaN at end-of-string: fails the test below
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+        throw wellFormednessError(text, what); // high surrogate with no low mate
+      }
+      i++; // a valid pair: skip its low half
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      throw wellFormednessError(text, what); // low surrogate with no high mate
+    }
   }
+}
+
+function wellFormednessError(text: string, what: string): LibreDbError {
+  return new LibreDbError(
+    "INVALID_ARGUMENT",
+    `${what} ${JSON.stringify(text)} contains a lone surrogate and cannot round-trip through UTF-8`,
+  );
 }
 
 /**

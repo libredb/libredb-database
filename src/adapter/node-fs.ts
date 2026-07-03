@@ -50,12 +50,14 @@ interface LockOwner {
 }
 
 /** Parse a lock file's contents. Returns undefined for an empty file or a
- * legacy sentinel-only lock (both are LibreDB strays with no liveness info) and
- * throws nothing — a FOREIGN file (no sentinel) returns null. */
+ * legacy sentinel-only lock (both are LibreDB artifacts with no liveness info)
+ * and throws nothing — a FOREIGN file returns null. The sentinel test is an
+ * EXACT first-line match: a file that merely begins with the sentinel text
+ * ("libredb-locksmith...") is foreign, not ours. */
 function parseLock(contents: string): LockOwner | undefined | null {
-  if (contents === "") return undefined; // a crashed create left an empty file
-  if (!contents.startsWith(LOCK_SENTINEL)) return null; // not ours
-  const [, pid, host, nonce] = contents.split("\n");
+  if (contents === "") return undefined; // a create interrupted before the write
+  const [first, pid, host, nonce] = contents.split("\n");
+  if (first !== LOCK_SENTINEL) return null; // not ours
   if (pid === undefined || host === undefined || nonce === undefined || nonce === "") {
     return undefined; // sentinel-only legacy lock: ours, but anonymous
   }
@@ -77,22 +79,27 @@ function livenessOf(owner: LockOwner): "alive" | "dead" | "unverifiable" {
 }
 
 /**
- * Is the lock at `lockPath` stale — held by a LibreDB process that verifiably
- * no longer exists? Foreign files are never stale (they are not locks to
- * steal), and a holder that cannot be probed (another host) counts as live:
- * auto-reclaim must never race a writer that might still be running. `--force`
- * (see {@link forceUnlock}) is the explicit escape hatch for that case.
+ * Is the lock at `lockPath` stale — held by a LibreDB process that VERIFIABLY
+ * no longer exists? Everything short of verified-dead is non-stale on purpose:
+ * a foreign file is not a lock to steal; a holder on another host cannot be
+ * probed and might be running; an anonymous lock (empty, or the sentinel-only
+ * v0.1.x format) carries no liveness info — it may even be a concurrent
+ * lock() between its exclusive create and its sentinel write, so auto-
+ * reclaiming it could admit two live writers. A read failure other than
+ * ENOENT (permissions, IO) is a real problem to surface, not staleness.
+ * `--force` (see {@link forceUnlock}) is the explicit escape hatch for the
+ * unverifiable cases, with the risk on the human who invoked it.
  */
 export function isStaleLock(lockPath: string): boolean {
   let contents: string;
   try {
     contents = readFileSync(lockPath, "utf8");
-  } catch {
-    return true; // vanished between the failed create and this read: retry
+  } catch (error) {
+    // ENOENT: it vanished between the failed create and this read — retry.
+    return (error as { code?: string }).code === "ENOENT";
   }
   const owner = parseLock(contents);
-  if (owner === null) return false; // foreign file: refuse to touch it
-  if (owner === undefined) return true; // anonymous LibreDB stray: reclaim it
+  if (owner === null || owner === undefined) return false;
   return livenessOf(owner) === "dead";
 }
 
@@ -107,7 +114,12 @@ function tryCreateLock(lockPath: string, contents: string): boolean {
     return false;
   }
   try {
-    writeSync(fd, contents);
+    // Loop: writeSync may legally write fewer bytes than asked, and a partial
+    // sentinel would read as an anonymous stray instead of this holder's lock.
+    const bytes = Buffer.from(contents, "utf8");
+    for (let written = 0; written < bytes.length; ) {
+      written += writeSync(fd, bytes, written);
+    }
   } finally {
     closeSync(fd);
   }
@@ -264,14 +276,16 @@ export function nodeFileSystem(): FileSystem {
           if (
             claimAndRemoveLock(lockPath, (c) => {
               const owner = parseLock(c);
-              if (owner === null) throw new Error("foreign file");
-              if (owner !== undefined && livenessOf(owner) === "alive") throw new Error("holder alive");
+              // Only a VERIFIED-dead holder is auto-reclaimed; anything else —
+              // foreign bytes, an anonymous lock, an unverifiable host — stays.
+              if (owner === null || owner === undefined) throw new Error("not verifiably stale");
+              if (livenessOf(owner) !== "dead") throw new Error("holder not verifiably dead");
             }) === "gone"
           ) {
             continue; // another racer reclaimed it; retry the exclusive create
           }
         } catch {
-          break; // a live or foreign lock appeared: locked
+          break; // the lock is not verifiably stale after all: locked
         }
       }
       throw new LibreDbError(
