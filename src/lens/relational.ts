@@ -43,7 +43,11 @@ export type ColumnType = "string" | "number" | "boolean" | "object";
  * handle is built.
  */
 export interface TableSchema {
+  /** The column whose value becomes the row's kernel key. Must name a
+   * declared `"string"` column. */
   readonly primaryKey: string;
+  /** The declared columns: every row must carry exactly these fields, each
+   * matching its {@link ColumnType}. */
   readonly columns: { readonly [name: string]: ColumnType };
 }
 

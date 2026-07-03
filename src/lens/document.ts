@@ -38,7 +38,10 @@ export type Doc = { [key: string]: JsonValue };
  * `Result<DocEntry>` (lens/types.ts), the same envelope the kv lens uses.
  */
 export interface DocEntry {
+  /** The document's id within its collection (the part of the kernel key
+   * after the `<collection>:` prefix). */
   readonly id: string;
+  /** The decoded document stored under {@link id}. */
   readonly doc: Doc;
 }
 

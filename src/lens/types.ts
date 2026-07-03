@@ -46,6 +46,7 @@ export interface Result<Row> extends Iterable<Row> {
  * write actually did.
  */
 export interface WriteResult {
+  /** How many stored entries the write created, overwrote, or removed. */
   readonly changed: number;
 }
 

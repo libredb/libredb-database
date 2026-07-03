@@ -60,8 +60,12 @@ export type ErrorCode =
  * humans and may change between releases.
  */
 export class LibreDbError extends Error {
+  /** The stable failure code — the part of the error a caller may branch on.
+   * See {@link ErrorCode} for the meaning of each value. */
   readonly code: ErrorCode;
 
+  /** Build a kernel error: `message` is prefixed with `libredb: `, and the
+   * adapter error that caused the failure (if any) rides along as `cause`. */
   constructor(code: ErrorCode, message: string, options?: { cause?: unknown }) {
     super(`libredb: ${message}`, options);
     this.name = "LibreDbError";
@@ -86,7 +90,10 @@ export type Value = Uint8Array;
 
 /** One key/value pair yielded by an ordered range scan. */
 export interface Entry {
+  /** The entry's key. A copy owned by the caller — mutating it cannot touch
+   * the committed store. */
   readonly key: Key;
+  /** The value stored under {@link key}. Also a caller-owned copy. */
   readonly value: Value;
 }
 
@@ -229,6 +236,8 @@ export interface RecoveryInfo {
  * kernel is purely in-memory — the natural fit for tests and ephemeral use.
  */
 export interface OpenOptions {
+  /** The file the write-ahead log lives at. Omit it for a purely in-memory
+   * database (the natural fit for tests and ephemeral use). */
   readonly path?: string;
   /**
    * The filesystem the write-ahead log runs on. Optional at the type level, but a

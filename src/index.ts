@@ -9,12 +9,27 @@
  * namespaces a database holds, so a tool can render faithful per-kind views;
  * {@link isReservedKey} (with {@link RESERVED_MARKER} / {@link CATALOG_PREFIX})
  * lets a raw-KV tool hide engine-internal keys instead of hardcoding the layout.
+ *
+ * @module
  */
-import { open as openKernel, type Open } from "./core.ts";
+import { open as openKernel, type Database, type OpenOptions } from "./core.ts";
 import { nodeFileSystem } from "./adapter/node-fs.ts";
 
 export { version, LibreDbError } from "./core.ts";
-export type { Database, ErrorCode, FileSystem, OpenOptions, RecoveryInfo, WalFile } from "./core.ts";
+export type {
+  Database,
+  Entry,
+  ErrorCode,
+  FileSystem,
+  Key,
+  Open,
+  OpenOptions,
+  RecoveryInfo,
+  Transaction,
+  Value,
+  WalFile,
+} from "./core.ts";
+export type { Store } from "./adapter/store.ts";
 
 /**
  * Open a LibreDB database on Node or Bun. Identical to the kernel's
@@ -24,7 +39,7 @@ export type { Database, ErrorCode, FileSystem, OpenOptions, RecoveryInfo, WalFil
  * The browser entry (`@libredb/libredb/browser`) omits this default so it never
  * imports `node:fs`.
  */
-export const open: Open = (options) =>
+export const open = (options?: OpenOptions): Database =>
   options?.path !== undefined && options.fs === undefined
     ? openKernel({ ...options, fs: nodeFileSystem() })
     : openKernel(options);

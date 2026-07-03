@@ -28,5 +28,8 @@ import type { Transaction } from "../core.ts";
  * {@link import("../core.ts").Database.transact}.
  */
 export interface Store {
+  /** Run `run` inside a transaction, applying its writes atomically — the
+   * same contract as {@link Database.transact}, which is the seam's one
+   * requirement of an implementer. */
   transact<T>(run: (tx: Transaction) => T): T;
 }

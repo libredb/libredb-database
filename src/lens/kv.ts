@@ -29,7 +29,9 @@ import type { Store } from "../adapter/store.ts";
 /** One key/value pair from a range scan, decoded to strings. The kv-lens
  * counterpart of the kernel's byte-level {@link import("../core.ts").Entry}. */
 export interface KvEntry {
+  /** The entry's key, decoded from the kernel's UTF-8 bytes. */
   readonly key: string;
+  /** The value stored under {@link key}, decoded the same way. */
   readonly value: string;
 }
 

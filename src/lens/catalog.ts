@@ -154,7 +154,10 @@ export function isReservedKey(key: string): boolean {
  * layer); a `document` entry carries only `kind` (documents are schemaless).
  */
 export interface CatalogEntry {
+  /** Which lens the namespace belongs to — the interpretation a cold-opening
+   * tool needs to render a faithful view. */
   readonly kind: "kv" | "document" | "relational";
+  /** A relational table's declared schema; absent for the schemaless kinds. */
   readonly schema?: TableSchema;
 }
 
