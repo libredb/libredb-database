@@ -61,7 +61,13 @@ function parseLock(contents: string): LockOwner | undefined | null {
   if (pid === undefined || host === undefined || nonce === undefined || nonce === "") {
     return undefined; // sentinel-only legacy lock: ours, but anonymous
   }
-  return { pid: Number(pid), host, nonce };
+  // The pid must be a real process id. A sentineled-but-mangled lock (partial
+  // overwrite, corruption) would otherwise carry pid=NaN, which the liveness
+  // probe reads as "dead" — and a LIVE holder's lock would be auto-reclaimed.
+  // Unparseable owner info downgrades to anonymous: never auto-stale.
+  const parsedPid = Number(pid);
+  if (!Number.isInteger(parsedPid) || parsedPid <= 0) return undefined;
+  return { pid: parsedPid, host, nonce };
 }
 
 /** Can the process behind `owner` be probed on THIS host, and is it alive?

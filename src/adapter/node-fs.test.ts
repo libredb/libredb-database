@@ -131,6 +131,28 @@ test("a legacy sentinel-only lock (no owner recorded) is NOT auto-reclaimed", ()
   expect(existsSync(`${path}.lock`)).toBe(false);
 });
 
+test("a sentineled lock with a mangled pid is anonymous, never auto-stale", () => {
+  // Corruption that keeps the sentinel line but garbles the owner must not
+  // read as a dead holder: pid=NaN would probe as "dead" and let a LIVE
+  // holder's lock be auto-reclaimed. Unparseable owner info means no
+  // liveness info — locked until --force.
+  const path = tempPath("db");
+  const lockPath = `${path}.lock`;
+  for (const mangled of ["garbage", "-5", "3.14", ""]) {
+    writeFileSync(lockPath, `${LOCK_SENTINEL}\n${mangled}\n${hostname()}\nnonce\n`);
+    expect(isStaleLock(lockPath)).toBe(false);
+  }
+  let caught: unknown;
+  try {
+    nodeFileSystem().lock?.(path);
+  } catch (error) {
+    caught = error;
+  }
+  expect((caught as LibreDbError).code).toBe("LOCKED");
+  forceUnlock(path); // the explicit escape hatch still works
+  expect(existsSync(lockPath)).toBe(false);
+});
+
 test("a file that merely starts with the sentinel text is foreign, not a lock", () => {
   const path = tempPath("db");
   writeFileSync(`${path}.lock`, `${LOCK_SENTINEL}smith\ndata\n`); // "libredb-locksmith..."

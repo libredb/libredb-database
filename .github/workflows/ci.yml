@@ -49,6 +49,7 @@ jobs:
         run: |
           BYTES=$(bun run size --json 2>/dev/null | jq -r '.[0].size // empty' || true)
           if [ -n "$BYTES" ]; then KB=$(awk "BEGIN{printf \"%.2f\", $BYTES/1024}"); else KB="n/a"; fi
+          BUDGET=$(jq -r '.[0].limit' .size-limit.json)
           {
             echo "## LibreDB CI"
             echo ""
@@ -60,7 +61,7 @@ jobs:
             echo "| License tripwire (runtime deps) | ${{ steps.license.outcome }} |"
             echo ""
             echo "- Coverage: 100% line/function/statement (enforced by bunfig.toml)"
-            echo "- Bundle: ${KB} kB (min+brotli) / 5 kB budget"
+            echo "- Bundle: ${KB} kB (min+brotli) / ${BUDGET} budget"
           } >> "$GITHUB_STEP_SUMMARY"
 
   node-smoke:

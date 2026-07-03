@@ -194,13 +194,20 @@ export function doc(store: Store, collection: string): DocCollection {
   let checked = false;
   const ensure = (read: (key: Uint8Array) => Uint8Array | undefined): void => {
     if (checked) return;
-    if (catalogKindAt(read, collection) === "relational") {
+    const kind = catalogKindAt(read, collection);
+    if (kind === "relational") {
       throw new LibreDbError(
         "INVALID_ARGUMENT",
         `${JSON.stringify(collection)} is a relational table; use table() instead of doc()`,
       );
     }
-    checked = true;
+    // Memoize ONLY the settled state. Once cataloged as a document collection
+    // the name can never become relational (recordRelational refuses a name of
+    // another kind), so the check is done for good. An UNCATALOGED name must
+    // keep re-checking: a later table() could catalog it as relational, and a
+    // handle whose guard went quiet on a stale "uncataloged" answer would
+    // write around that table's schema validation.
+    if (kind === "document") checked = true;
   };
   return collectionHandle(store, collection, ensure);
 }

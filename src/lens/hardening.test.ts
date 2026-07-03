@@ -118,6 +118,17 @@ test("doc() operations refuse a name cataloged as a relational table", () => {
   db.close();
 });
 
+test("a doc() handle built BEFORE the name became relational still refuses (no stale memoization)", () => {
+  const db = open();
+  const handle = doc(db, "ledger");
+  expect(handle.get("x")).toBeUndefined(); // used while uncataloged: guard must stay live
+  table(db, "ledger", SCHEMA).insert({ id: "l1", n: 1 }); // now cataloged relational
+  expect(errorFrom(() => handle.put("l2", { rogue: true })).code).toBe("INVALID_ARGUMENT");
+  expect(errorFrom(() => handle.get("l1")).code).toBe("INVALID_ARGUMENT");
+  expect(table(db, "ledger", SCHEMA).get("l2")).toBeUndefined(); // nothing slipped past the schema
+  db.close();
+});
+
 test("table() refuses a name cataloged as a document collection", () => {
   const db = open();
   doc(db, "notes").put("n1", { text: "hi" });
