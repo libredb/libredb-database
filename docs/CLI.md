@@ -61,7 +61,7 @@ schema for relational tables.
 ```sh
 $ libredb inspect app.libredb
 app.libredb  412 bytes
-  logs    document
+  logs  document
   people  relational  {"primaryKey":"id","columns":{"id":"string","name":"string"}}
 ```
 
@@ -190,8 +190,8 @@ file copy — with one rule.
 | Code | Meaning | Examples |
 | --- | --- | --- |
 | `0` | Success | a read/write completed |
-| `1` | Runtime error | file not found, `get` on a missing key |
-| `2` | Usage error | unknown command/option, missing argument, malformed import JSON, reserved key, lock held |
+| `1` | Runtime error | file not found, `get` on a missing key, lock held by another writer |
+| `2` | Usage error | unknown command/option, missing argument, malformed import JSON, reserved key |
 
 This makes the CLI scriptable — e.g. in CI:
 

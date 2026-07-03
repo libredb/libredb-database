@@ -17,7 +17,7 @@
 [![types: included](https://img.shields.io/badge/types-included-blue.svg)](https://www.typescriptlang.org/)
 [![dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](./package.json)
 [![bundle size](https://img.shields.io/bundlephobia/minzip/@libredb/libredb)](https://bundlephobia.com/package/@libredb/libredb)
-[![status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](#project-status--roadmap)
+[![status: early beta](https://img.shields.io/badge/status-early%20beta-orange.svg)](#project-status--roadmap)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/libredb/libredb-database)
 
 LibreDB is a small, readable, embeddable, multi-model database written in TypeScript. It is built on
@@ -25,8 +25,8 @@ one idea: a database can be powerful and still be understood by opening its sour
 key-value core handles durability and transactions; key-value, document, and relational APIs are thin
 *lenses* over that one core — not three separate engines. It runs in-memory for tests or file-backed
 for durability, ships **zero runtime dependencies**, and proves its crash recovery with deterministic
-simulation testing. Today it is pre-alpha, aimed at test and development environments — small enough to
-learn how a database actually works, and serious enough to grow into more.
+simulation testing. Today it is an early beta, aimed at test and development environments — small
+enough to learn how a database actually works, and serious enough to grow into more.
 
 ## Highlights
 
@@ -41,7 +41,7 @@ learn how a database actually works, and serious enough to grow into more.
   run.
 - **In-memory or durable** — `open()` for tests, `open({ path })` for a crash-safe, WAL-backed,
   fsync-on-commit file.
-- **TypeScript-native** — full types shipped, ESM-only, tree-shakeable, under 4 kB min+brotli.
+- **TypeScript-native** — full types shipped, ESM-only, tree-shakeable, under 6 kB min+brotli.
 - **Crash recovery you can trust** — 100% line coverage on the core, plus deterministic simulation
   testing that tortures the write-ahead log under a simulated crashing filesystem.
 - **Nothing hidden** — queries are plain in-engine scans, errors surface, and costs are obvious (O(n)
@@ -153,12 +153,15 @@ npx libredb import data.libredb seed.json # bulk-set from a JSON object, atomica
 ```
 
 Read commands open the file read-only, so inspection never mutates it. Write commands take an
-advisory `<path>.lock` to refuse a second concurrent writer. Use `--force` only to clear a stale
-lock left by a crashed writer: the lock is advisory and LibreDB is single-process, so two writers
-that force at the same time can still race and corrupt the file.
+advisory `<path>.lock` to refuse a second concurrent writer. A lock left by a writer that crashed on
+the same host is reclaimed automatically — no flag needed. Use `--force` only for a lock whose
+holder cannot be verified (an anonymous lock or one written on another host); it refuses a holder
+that is verifiably alive, so it cannot knowingly admit two live writers. The remaining risk is the
+unverifiable case: a live writer on another machine sharing the file can still be forced past, which
+can corrupt the file.
 
 Prefer a standalone binary with no Node or Bun installed? Each release attaches self-contained
-executables (Linux, macOS, Windows; x64 and arm64) with `.sha256` checksums on its
+executables (Linux and macOS on x64 and arm64; Windows on x64) with `.sha256` checksums on its
 [GitHub Release](https://github.com/libredb/libredb-database/releases). Or build one locally with
 `bun run compile`.
 
@@ -295,7 +298,7 @@ Honesty about scale (comprehension is the budget in v1, not throughput):
   (or use `libredb import`, which already does): one copy, one fsync, one record for the whole batch.
 - **No secondary indexes**: a `find`/`where` is an O(n) scan by design in v1.
 - **The log grows without bound** until compaction lands (tracked in
-  [#12](https://github.com/libredb/libredb/issues/12)); reopening replays the whole log.
+  [#12](https://github.com/libredb/libredb-database/issues/12)); reopening replays the whole log.
 
 ## Documentation
 
@@ -324,8 +327,9 @@ the recommended home is still test/dev data.
   codes; the DST harness with IO-fault injection and binary fuzz; 100% line/function/statement
   coverage.
 - **Next:** secondary indexes and a richer query surface; more query operators; additional lenses;
-  WAL compaction/checkpointing ([#12](https://github.com/libredb/libredb/issues/12)); real-browser
-  OPFS verification ([#10](https://github.com/libredb/libredb/issues/10)).
+  WAL compaction/checkpointing
+  ([#12](https://github.com/libredb/libredb-database/issues/12)); real-browser OPFS verification
+  ([#10](https://github.com/libredb/libredb-database/issues/10)).
 
 ## The LibreDB family
 

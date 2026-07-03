@@ -9,6 +9,6 @@ move up to documents and typed tables. All three are thin lenses over the same o
   reach lens.
 - [Catalog](./catalog.md) — the self-describing registry of what each namespace holds.
 
-See also: the [README](../../README.md) for the quick start, [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
+See also: the [README](../../README.md) for the quick start, [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md)
 for how it all works under the hood, and [`../RELIABILITY.md`](../RELIABILITY.md) for the durability
 and crash-recovery story.

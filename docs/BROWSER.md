@@ -283,8 +283,11 @@ setup from §4.1.
   on the file — only one handle per file at a time. So one Worker owns the database;
   a second tab/Worker cannot open the same file concurrently. For multi-tab apps,
   route all access through a single owner (e.g. a `SharedWorker`, or elect one tab
-  as writer). This matches LibreDB's "single-process, no internal file locking"
-  model — it is the foundation, not a server.
+  as writer). This matches LibreDB's single-writer model — on Node the kernel
+  enforces it with an exclusive `<path>.lock` file (a second `open` throws
+  `LOCKED`); in the browser the sync access handle's own exclusivity provides
+  the same guarantee, so the OPFS adapter needs no lock file. It is the
+  foundation, not a server.
 - **OPFS needs a Worker and a secure context.** Sync access handles exist only in
   dedicated Web Workers, over HTTPS or `localhost`. In-memory `open()` has neither
   requirement.

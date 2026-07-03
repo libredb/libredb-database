@@ -1,7 +1,8 @@
 # Standalone binaries
 
-Every LibreDB release attaches **self-contained executables** of the `libredb`
-CLI to its [GitHub Release](https://github.com/libredb/libredb-database/releases).
+Every stable LibreDB release attaches **self-contained executables** of the `libredb`
+CLI to its [GitHub Release](https://github.com/libredb/libredb-database/releases)
+(pre-releases skip the binaries).
 They embed the Bun runtime, so they run with **no Node, no Bun, and no `npm install`**
 — just download one file and run it.
 
@@ -91,8 +92,9 @@ builds.)
 
 ## Notes
 
-- **Size:** each binary is ~80–90 MB because it bundles the Bun runtime. That is
-  the cost of "no install / no dependencies."
+- **Size:** each binary is roughly 60–100 MB depending on the platform (macOS
+  builds are the smallest, Windows the largest) because it bundles the Bun
+  runtime. That is the cost of "no install / no dependencies."
 - **Not on npm/JSR:** binaries are a GitHub Releases artifact only; the package
   registries ship the importable library + the `libredb` bin instead.
 - **Same data files everywhere:** a `.libredb` file written by the library, the

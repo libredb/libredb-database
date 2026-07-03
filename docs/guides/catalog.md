@@ -27,7 +27,8 @@ registry.get("logs");
 ```
 
 The catalog lives under a reserved key prefix that sorts below all user data, so its entries never
-appear in a `kv`, `doc`, or `table` scan — and no user row leaks into the registry. `kv` namespaces
+appear in a `doc` or `table` scan, and no `kv` scan over user keys crosses into them — and no user
+row leaks into the registry. `kv` namespaces
 are deliberately not cataloged: `kv` is the raw layer with full keyspace access.
 
 A tool that renders the raw `kv` layer (so it sees everything, including the catalog) should hide
@@ -42,8 +43,9 @@ const db = open();
 // ... user writes through doc/table, which also write catalog entries ...
 
 // range is half-open [start, end). "" encodes to the lowest bytes, and
-// "\u{10FFFF}" (the highest Unicode code point) encodes above any UTF-8 text key
-// the lenses produce, so this interval covers the whole keyspace. (kv.prefix
+// "\u{10FFFF}" (the highest Unicode code point) encodes above any key that starts
+// with a lower code point, so this interval covers every practical key. (A key
+// beginning with U+10FFFF itself falls outside the half-open interval.) (kv.prefix
 // cannot scan everything — it rejects an empty prefix.) This is the same
 // full-keyspace pattern LibreDB Studio's provider uses.
 const visible = kv(db)

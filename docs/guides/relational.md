@@ -31,8 +31,10 @@ users.get("missing"); // undefined
 db.close();
 ```
 
-A column type is one of `"string"`, `"number"`, `"boolean"`, or `"object"` (a plain JSON object). The
-`primaryKey` must name a declared `"string"` column — it becomes the kernel key.
+A column type is one of `"string"`, `"number"`, `"boolean"`, or `"object"` (a plain JSON object). A
+`"number"` column accepts only finite numbers — `NaN` and `Infinity` are rejected at insert (JSON
+cannot represent them, so they would round-trip as a schema-violating `null`). The `primaryKey` must
+name a declared `"string"` column — it becomes the kernel key.
 
 ## Validation is strict at insert
 

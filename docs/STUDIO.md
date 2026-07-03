@@ -22,8 +22,9 @@ A LibreDB connection is just a path to a `.libredb` file on the Studio server's 
 ```
 
 The `database` field carries the file path (reused exactly like SQLite — there is no separate `path`
-field). The file is opened with `open({ path })`; a path that does not exist yet is created on the
-first write. Connecting without a path is rejected — there is no in-memory mode for a connection.
+field). The file is opened with `open({ path })`; a path that does not exist yet is created empty at
+open time (together with its `.lock` file), and the on-disk format header lands with the first write.
+Connecting without a path is rejected — there is no in-memory mode for a connection.
 
 ## How editor commands map to the lens API
 

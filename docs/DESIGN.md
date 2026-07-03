@@ -62,14 +62,14 @@ The empty space we claim: **small + readable + embedded + multi-model**, where t
 The two-tier trust model is expressed physically. A single file cannot encode "these lines are guarded, those are flexible"; the file boundary makes the trust model visible and CI-enforceable.
 
 ```
-@libredb/core
+@libredb/libredb
 |-- core.ts          KERNEL: storage + transactions + recovery. Starts ~1k lines.
 |                    Strictest line budget. Heavy tests. CODEOWNERS-guarded.
 |                    Reading this file teaches "how a database works."
 |-- lens/
 |   |-- kv.ts            First lens (natural fit: the core is an ordered key-value store)
-|   |-- document.ts      Later
-|   |-- relational.ts    Later
+|   |-- document.ts      Second lens (shipped; section 6.1)
+|   |-- relational.ts    Third lens (shipped; section 6.2)
 |-- adapter/ , query/    Edges: flexible, fast, open contribution
 ```
 
@@ -121,11 +121,11 @@ The relational lens is the reach lens. It is the identity-risk lens: a SQL engin
 - **Honest deferrals (later, not v1):** SQL, secondary indexes, outer / non-equi joins, foreign keys, unique constraints, nullable/optional columns, aggregation / group-by, and order-by beyond primary-key order.
 - The kernel is **unchanged**; the lens is `lens/relational.ts`, built on top of the document lens and reusing `lens/types.ts`, `adapter/store.ts`, and `query/`.
 
-## 6.3 Catalog — design for a future milestone (NOT built yet)
+## 6.3 Catalog — v1 locked design (built as `lens/catalog.ts`; see section 7)
 
 **Motivation.** A LibreDB file is raw ordered key-value bytes. Which lens a key belongs to (kv / document / relational) and a relational table's schema live in *application code* (`table(db, name, schema)`), NOT on disk. So a tool that opens a file cold — e.g. the LibreDB Studio provider — can only show the raw KV store grouped by key prefix; it cannot know that `orders:` is a relational table with schema X. The catalog persists that interpretation so tools can offer richer, faithful views. (Studio's raw-KV browser, "Option A", ships without this; the richer "Option B" views depend on it.)
 
-**Locked-by-default design (ratify before building):**
+**Locked design (as built):**
 
 - **A lens-level convention, NOT a kernel feature.** The kernel stays pure ordered-KV and unchanged. The catalog is just additional KV entries written by the lenses under a reserved key prefix. Honesty discipline: do not grow `core.ts` for this.
 - **Reserved prefix.** Catalog entries live under a reserved namespace (e.g. a low-byte prefix like `\x00libredb:catalog:`, sorting before user data). User collection/table names starting with the reserved marker are rejected — a correctness rule, like the prefix-soundness rule already enforced.
@@ -163,12 +163,12 @@ The real reliability bar (DESIGN principle 4). The first lens shipped on standar
   (ordered-KV kernel + transactions + WAL crash recovery), comfortably under the ~1,000-line starting
   target and far under the ~10,000-line ceiling. Comprehension time, not line count, remains the governing
   metric. The "lenses land on top of (not inside) the core" bet is VERIFIED, not predicted: the
-  document (229 lines) and relational (339 lines) lenses, and the entire catalog (`lens/catalog.ts`,
-  194 lines), all landed ON TOP of the kernel. `core.ts` grew only once — the S1 injectable-FS seam for
+  document (311 lines) and relational (369 lines) lenses, and the entire catalog (`lens/catalog.ts`,
+  286 lines), all landed ON TOP of the kernel. `core.ts` grew only once — the S1 injectable-FS seam for
   DST (see §6.4) took it from 481 to 548 lines (+67, against an estimated ~520), the one guarded-core
   change the DST work sanctioned; it is still far under the ~1,000-line starting target. The DST harness
-  (`src/sim/`, 675 lines) is test-only and never ships, so it does not count against the budget. The
-  budget held with headroom.
+  (`src/sim/`, roughly 1,200 lines including its tests) is test-only and never ships, so it does not count
+  against the budget. The budget held with headroom.
   **Update (2026-07-03, the pre-announcement hardening wave):** `core.ts` now measures 950 physical
   lines — but 456 of them are explanatory comments and 45 are blank; the CODE is 449 lines, still
   under the original ~500-line shape. The growth is the audit-driven hardening (the `LRDB` file
@@ -187,9 +187,10 @@ The real reliability bar (DESIGN principle 4). The first lens shipped on standar
   DST layer §6.4 and DESIGN principle 4 promised, no longer hand-waved.
 - **Production arc.** Still open. Define the concrete bar that moves LibreDB from "test/dev" to "earns
   production." The deterministic-simulation-testing dependency is now DISCHARGED (resolved above); what
-  remains is a hardening checklist (e.g. directory fsync on first file creation, WAL
-  compaction/checkpointing — both known limitations, and DST's own short-read
-  recovery note from S4), all of which are tracked-later tasks.
+  remains is a hardening checklist. Directory fsync on first file creation shipped in the 2026-07 hardening
+  wave (`src/adapter/node-fs.ts` fsyncs the parent directory when the file is created), and a short
+  read during recovery now fails loudly with INCOMPLETE_READ instead of being a deferred note; WAL
+  compaction/checkpointing remains a known limitation and a tracked-later task.
 
 ## 8. Lineage of the idea
 

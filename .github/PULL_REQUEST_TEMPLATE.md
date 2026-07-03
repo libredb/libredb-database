@@ -1,6 +1,7 @@
 <!--
 Thank you for contributing to LibreDB. Keep the PR title in Conventional Commits form
-(e.g. "feat(lens): add prefix scan") — PRs are squash-merged and the title becomes the changelog entry.
+(e.g. "feat(lens): add prefix scan") — PRs are squash-merged and the title becomes the commit message.
+The user-facing changelog comes from changesets, not the PR title.
 -->
 
 ## What and why
