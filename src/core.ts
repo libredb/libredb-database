@@ -379,9 +379,11 @@ function makeTransaction(working: StoredEntry[], journal: Op[]): Transaction {
       // generator body runs at the first next()). Walking the live array by
       // index instead would let a delete-during-scan shift entries under the
       // cursor and silently skip them — the classic delete-while-scanning bug.
-      // Entries are immutable once stored, so holding references is safe; the
-      // byte copies happen per-yield, so an early-exited scan pays only for
-      // the entries it consumed.
+      // Entries are immutable once stored, so holding references is safe.
+      // Cost, precisely: the reference walk is O(matching range) and runs
+      // up-front at the first next(); only the BYTE COPIES are per-yield, so
+      // an early-exited scan skips the copies (usually the dominant cost) but
+      // not the walk.
       // locate() returns the first index whose key is >= start (the insertion
       // point), so the scan is naturally inclusive of start. It stops at the
       // first key that is not < end, making the range half-open [start, end).
