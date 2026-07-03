@@ -13,7 +13,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-  - package-ecosystem: "npm"
+  # The "bun" ecosystem (not "npm"): this repo's lockfile is bun.lock, and the
+  # npm ecosystem updates only package.json — leaving the lockfile stale, which
+  # `bun install --frozen-lockfile` then rightly rejects in CI.
+  - package-ecosystem: "bun"
     directory: "/"
     schedule:
       interval: "weekly"

@@ -16,11 +16,12 @@ permissions:
 jobs:
   sonarcloud:
     name: analysis
-    # Skip on PRs from forks: GitHub does not expose secrets (SONAR_TOKEN) to
-    # fork-triggered runs, so the scan would fail through no fault of the PR.
-    # Sonar still runs on push to main and on same-repo PRs; fork contributions
-    # are analyzed after they merge to main.
-    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    # Skip on PRs from forks AND on Dependabot PRs: GitHub exposes secrets
+    # (SONAR_TOKEN) to neither fork-triggered nor Dependabot-triggered runs, so
+    # the scan would fail through no fault of the PR — and analyzing a
+    # dependency bump adds nothing. Sonar still runs on push to main and on
+    # same-repo human PRs; everything else is analyzed after it merges to main.
+    if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
