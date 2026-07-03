@@ -49,7 +49,10 @@ interface Ctx {
  */
 function sanitize(text: string, raw: boolean): string {
   if (raw) return text;
-  // eslint-disable-next-line no-control-regex
+  // Control characters in this regex are the entire point (they are what gets
+  // escaped). Only oxlint's no-control-regex fires here, so the suppression
+  // targets it specifically — an eslint-disable would be an unused directive.
+  // oxlint-disable-next-line no-control-regex
   return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
 }
 

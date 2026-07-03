@@ -52,7 +52,7 @@ describe("Result", () => {
     });
     db.close();
 
-    expect(rows.map((e) => [...e.key, ...e.value])).toEqual([
+    expect(rows.map((e) => Array.from(e.key).concat(Array.from(e.value)))).toEqual([
       [1, 10],
       [2, 20],
     ]);

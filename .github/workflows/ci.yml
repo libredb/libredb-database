@@ -84,3 +84,13 @@ jobs:
       - run: bun run build
       - name: Smoke-test the built package under Node
         run: node scripts/node-smoke.mjs
+      # The standalone binary is otherwise only compiled during publish (and
+      # only after npm publish succeeded), so a compile regression would first
+      # surface at release time. One cheap compile + round-trip here keeps it
+      # honest on every PR.
+      - name: Smoke-test the compiled standalone binary
+        run: |
+          bun build --compile src/cli/main.ts --outfile /tmp/libredb-smoke
+          /tmp/libredb-smoke set /tmp/smoke.libredb greeting hello
+          test "$(/tmp/libredb-smoke get /tmp/smoke.libredb greeting)" = "hello"
+          /tmp/libredb-smoke stats /tmp/smoke.libredb
