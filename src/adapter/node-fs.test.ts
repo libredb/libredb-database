@@ -12,7 +12,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 
 import { LibreDbError } from "../core.ts";
 import { forceUnlock, fsyncDirectoryOf, isStaleLock, LOCK_SENTINEL, nodeFileSystem } from "./node-fs.ts";
@@ -202,6 +202,41 @@ test("a non-EEXIST failure creating the lock surfaces unchanged (not LOCKED)", (
   }
   expect(caught).toBeInstanceOf(Error);
   expect((caught as { code?: string }).code).toBe("ENOENT");
+});
+
+test("a lock that turns out live at claim time (the reclaim race) is put back and refused", () => {
+  // The race the double-check exists for: the holder looks dead at the
+  // isStaleLock pre-check but is alive when the claimed bytes are re-judged
+  // (in reality: a new writer's lock slid in between the two). Simulated
+  // deterministically by desyncing the two liveness probes.
+  const path = tempPath("db");
+  const lockPath = `${path}.lock`;
+  const contents = deadLock();
+  writeFileSync(lockPath, contents);
+  let probes = 0;
+  const killSpy = spyOn(process, "kill").mockImplementation(() => {
+    probes++;
+    if (probes === 1) {
+      const dead = new Error("ESRCH") as Error & { code: string };
+      dead.code = "ESRCH";
+      throw dead; // pre-check: verifiably dead
+    }
+    return true; // claim re-check: alive after all
+  });
+  try {
+    let caught: unknown;
+    try {
+      nodeFileSystem().lock?.(path);
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as LibreDbError).code).toBe("LOCKED");
+    // The refused lock was renamed back exactly as it was.
+    expect(readFileSync(lockPath, "utf8")).toBe(contents);
+    expect(probes).toBe(2);
+  } finally {
+    killSpy.mockRestore();
+  }
 });
 
 test("release() does not delete a lock someone else re-acquired after a force", () => {
