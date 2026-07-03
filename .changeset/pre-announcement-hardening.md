@@ -22,7 +22,7 @@ Kernel:
 
 Adapters:
 
-- node-fs: creating a database fsyncs the parent directory (a fresh database can no longer vanish wholesale on power loss); recovery truncation is fsync'd; reads are positional on the WAL's own file descriptor instead of re-reading the whole file per call.
+- node-fs: creating a database fsyncs the parent directory (a fresh database can no longer vanish wholesale on power loss); a directory-fsync failure that is not a platform limitation (e.g. EIO) now surfaces as an error instead of being silently ignored; recovery truncation is fsync'd; reads are positional on the WAL's own file descriptor instead of re-reading the whole file per call.
 - OPFS: reads loop until filled, so a legal short read can no longer masquerade as a torn tail; recovery treats an incomplete read as an IO fault (`INCOMPLETE_READ`), never as license to truncate.
 
 Lenses:

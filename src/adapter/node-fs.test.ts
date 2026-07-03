@@ -71,6 +71,35 @@ test("fsyncDirectoryOf tolerates a directory that cannot be opened", () => {
   expect(() => fsyncDirectoryOf(join(tmpdir(), "libredb-no-such-dir-xyz", "file"))).not.toThrow();
 });
 
+test("fsyncDirectoryOf surfaces real IO failures and absorbs only unsupported-platform codes", () => {
+  const fail = (code: string): never => {
+    const error = new Error(code) as Error & { code: string };
+    error.code = code;
+    throw error;
+  };
+  const io = (fsyncCode: string) => ({
+    openSync: () => 42,
+    fsyncSync: () => fail(fsyncCode),
+    closeSync: () => {},
+  });
+  // "This platform cannot fsync a directory" codes are tolerated...
+  for (const code of ["EINVAL", "ENOTSUP", "EPERM", "EACCES", "EBADF", "EISDIR"]) {
+    expect(() => fsyncDirectoryOf("/any/file", io(code))).not.toThrow();
+  }
+  // ...a real disk failure is not: the new directory entry may not be durable,
+  // and silence here would be exactly the fsyncgate mistake.
+  expect(() => fsyncDirectoryOf("/any/file", io("EIO"))).toThrow(/EIO/);
+  // A codeless throw is treated as unsupported (UNKNOWN), not as a disk fault.
+  const codeless = {
+    openSync: () => 42,
+    fsyncSync: () => {
+      throw new Error("no code");
+    },
+    closeSync: () => {},
+  };
+  expect(() => fsyncDirectoryOf("/any/file", codeless)).not.toThrow();
+});
+
 test("fsyncDirectoryOf fsyncs an existing parent directory without error", () => {
   const path = tempPath("synced");
   writeFileSync(path, "x");

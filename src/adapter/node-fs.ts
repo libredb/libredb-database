@@ -187,23 +187,44 @@ export function forceUnlock(path: string): void {
   });
 }
 
+/** Error codes that mean "this platform cannot fsync a directory" (Windows
+ * refuses to open one; some filesystems refuse the fsync) — the only failures
+ * a directory fsync may silently absorb. ENOENT is included for the caller
+ * that probes a path whose directory is already gone. A code outside this set
+ * (EIO above all) is a REAL failure: the new directory entry may not be
+ * durable, and pretending otherwise would be the exact silence the fsyncgate
+ * lesson warns about. */
+const DIR_FSYNC_UNSUPPORTED = new Set(["EACCES", "EBADF", "EINVAL", "EISDIR", "ENOENT", "ENOTSUP", "EPERM", "UNKNOWN"]);
+
+/** The syscalls {@link fsyncDirectoryOf} performs, injectable so a test can
+ * exercise the failure classification without a faulty real disk. */
+interface DirSyncIo {
+  openSync(path: string, flags: string): number;
+  fsyncSync(fd: number): void;
+  closeSync(fd: number): void;
+}
+
 /**
  * Fsync the directory containing `path`, making a just-created file's directory
  * entry durable. POSIX leaves a new entry volatile until the directory itself
  * is fsync'd — without this, a freshly created database (and every commit in
- * it) can vanish wholesale on power loss. Exported for the tests that pin it.
+ * it) can vanish wholesale on power loss. Platforms that cannot fsync a
+ * directory are tolerated (see {@link DIR_FSYNC_UNSUPPORTED}); any other
+ * failure — an EIO from the disk — propagates, because a database that cannot
+ * make its own existence durable must say so rather than carry on. Exported
+ * for the tests that pin it.
  */
-export function fsyncDirectoryOf(path: string): void {
+export function fsyncDirectoryOf(path: string, io: DirSyncIo = { openSync, fsyncSync, closeSync }): void {
   try {
-    const dirFd = openSync(dirname(path), "r");
+    const dirFd = io.openSync(dirname(path), "r");
     try {
-      fsyncSync(dirFd);
+      io.fsyncSync(dirFd);
     } finally {
-      closeSync(dirFd);
+      io.closeSync(dirFd);
     }
-  } catch {
-    // Platforms without directory fsync (Windows) throw on the open or the
-    // fsync; directory-entry durability is the OS's best effort there.
+  } catch (error) {
+    const code = (error as { code?: string }).code ?? "UNKNOWN";
+    if (!DIR_FSYNC_UNSUPPORTED.has(code)) throw error;
   }
 }
 

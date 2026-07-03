@@ -43,7 +43,9 @@ export class SimFS implements FileSystem {
   /** When set, the NEXT read returns a seeded-short prefix, then disarms. */
   private shortReadArmed = false;
   /** When set, the NEXT append persists only a seeded STRICT prefix of its
-   * bytes, then throws — a partial write cut short by ENOSPC/EIO. */
+   * bytes — possibly EMPTY (the write failed before anything reached disk),
+   * never the full record — then throws, modelling ENOSPC/EIO cutting a write
+   * short at an arbitrary point including before it started. */
   private appendErrorArmed = false;
   /** When set, the NEXT fsync throws — the bytes stay pending (not durable),
    * modelling a durability point that failed after the write. */
@@ -66,8 +68,11 @@ export class SimFS implements FileSystem {
       append: (b) => {
         if (this.appendErrorArmed) {
           this.appendErrorArmed = false;
-          // A STRICT prefix (never the full record): the fault is "the write
-          // was cut short", so the record on disk must be torn.
+          // A STRICT prefix, never the full record. kept may be ZERO — a
+          // failure before any byte reached the disk is as real an ENOSPC
+          // outcome as a mid-record tear, and the seeded range covers both.
+          // (The deterministic poisoned-tail case, which needs a non-empty
+          // tear, is pinned separately in core.hardening.test.ts.)
           const kept = Math.floor(this.random() * b.length);
           for (const byte of b.subarray(0, kept)) f.pending.push(byte);
           throw new Error("simfs: injected append fault (ENOSPC)");
@@ -90,9 +95,10 @@ export class SimFS implements FileSystem {
   }
 
   /** Arm a one-shot append fault: the next {@link WalFile.append} persists a
-   * seeded strict prefix of its bytes and throws. The torn record this leaves
-   * is exactly the poisoned-tail scenario the kernel's failure latch exists
-   * for (audit finding B3 / fsyncgate). */
+   * seeded strict prefix of its bytes (possibly none of them) and throws.
+   * A non-empty prefix is exactly the poisoned-tail scenario the kernel's
+   * failure latch exists for (audit finding B3 / fsyncgate); an empty one is
+   * the clean-failure variant the latch must also survive. */
   armAppendError(): void {
     this.appendErrorArmed = true;
   }
