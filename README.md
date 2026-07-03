@@ -34,7 +34,8 @@ learn how a database actually works, and serious enough to grow into more.
   key-value engine (FoundationDB-style), not three engines bolted together.
 - **Multi-model** — raw strings, JSON documents, and schema-validated typed tables in the same
   database, even the same file.
-- **Readable by design** — the kernel is under 600 lines; open the source and learn how a database
+- **Readable by design** — the kernel is one file of under a thousand lines, roughly half of it
+  explanatory prose; open the source and learn how a database
   actually works.
 - **Embeddable, zero dependencies** — `bun add @libredb/libredb` and go; nothing else to install or
   run.

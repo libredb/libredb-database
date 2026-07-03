@@ -279,17 +279,16 @@ export function nodeFileSystem(): FileSystem {
         // writer's lock slid in between the check and the claim, it is put
         // back untouched.
         try {
-          if (
-            claimAndRemoveLock(lockPath, (c) => {
-              const owner = parseLock(c);
-              // Only a VERIFIED-dead holder is auto-reclaimed; anything else —
-              // foreign bytes, an anonymous lock, an unverifiable host — stays.
-              if (owner === null || owner === undefined) throw new Error("not verifiably stale");
-              if (livenessOf(owner) !== "dead") throw new Error("holder not verifiably dead");
-            }) === "gone"
-          ) {
-            continue; // another racer reclaimed it; retry the exclusive create
-          }
+          // "removed" (we reclaimed it) and "gone" (another racer did) call
+          // for the same next step: retry the exclusive create, where exactly
+          // one contender wins. Only a refusal breaks out as locked.
+          claimAndRemoveLock(lockPath, (c) => {
+            const owner = parseLock(c);
+            // Only a VERIFIED-dead holder is auto-reclaimed; anything else —
+            // foreign bytes, an anonymous lock, an unverifiable host — stays.
+            if (owner === null || owner === undefined) throw new Error("not verifiably stale");
+            if (livenessOf(owner) !== "dead") throw new Error("holder not verifiably dead");
+          });
         } catch {
           break; // the lock is not verifiably stale after all: locked
         }

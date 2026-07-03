@@ -227,6 +227,24 @@ test("import rejects a non-string value", () => {
   expect(r.err.join("\n")).toMatch(/object of string values/i);
 });
 
+test("import rejects lone-surrogate keys and values (the kv lens invariant holds for bulk loads)", () => {
+  const path = fixture();
+  // JSON.parse happily produces lone surrogates from \uD800 escapes; without
+  // validation the import would write them through the kernel directly, where
+  // two distinct malformed keys collide on the same UTF-8 bytes.
+  const file = `${path}.surrogate.json`;
+  writeFileSync(file, String.raw`{"bad-\ud800-key": "v"}`);
+  const badKey = cli("import", path, file);
+  expect(badKey.code).toBe(2);
+  expect(badKey.err.join("\n")).toMatch(/lone surrogate/i);
+
+  writeFileSync(file, String.raw`{"ok": "bad-\udfff-value"}`);
+  const badValue = cli("import", path, file);
+  expect(badValue.code).toBe(2);
+  expect(badValue.err.join("\n")).toMatch(/lone surrogate/i);
+  expect(cli("get", path, "ok").code).toBe(1); // nothing was written
+});
+
 test("import with no file is a usage error", () => {
   const r = cli("import", fixture());
   expect(r.code).toBe(2);

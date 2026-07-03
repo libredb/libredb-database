@@ -169,6 +169,13 @@ The real reliability bar (DESIGN principle 4). The first lens shipped on standar
   change the DST work sanctioned; it is still far under the ~1,000-line starting target. The DST harness
   (`src/sim/`, 675 lines) is test-only and never ships, so it does not count against the budget. The
   budget held with headroom.
+  **Update (2026-07-03, the pre-announcement hardening wave):** `core.ts` now measures 950 physical
+  lines — but 456 of them are explanatory comments and 45 are blank; the CODE is 449 lines, still
+  under the original ~500-line shape. The growth is the audit-driven hardening (the `LRDB` file
+  header and self-checksummed record headers, recovery corruption classification, the IO-failure
+  latch, the exclusive-lock seam, typed errors) plus the prose that keeps each mechanism teachable.
+  Comprehension time remains the governing metric; the ~1,000-physical-line starting target still
+  holds, with the code half comfortably inside the original budget.
 - **Reliability tooling. (RESOLVED 2026-06-24 — DST built and green.)** The open question "how is
   deterministic simulation testing actually implemented in a TS project" is now answered by shipped,
   green code, exactly per the §6.4 locked design: an injectable FS seam in `core.ts` (S1), a seeded

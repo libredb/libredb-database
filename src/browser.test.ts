@@ -131,3 +131,34 @@ test("the node entry's import graph DOES pull in node:fs (the walker discriminat
   const specifiers = transitiveBareSpecifiers(resolve(import.meta.dir, "index.ts"));
   expect(specifiers.has("node:fs")).toBe(true);
 });
+
+test("the browser open type accepts an onRecovery callback alongside path+fs", () => {
+  // The kernel supports onRecovery and the browser entry exports RecoveryInfo;
+  // the option must therefore be expressible in BrowserOpenOptions — this test
+  // is primarily a COMPILE-TIME assertion (it would fail typecheck if the
+  // option were missing from the type), with a runtime pass over a fresh store.
+  const store: number[] = [];
+  const memFs = {
+    open: () => ({
+      size: () => store.length,
+      read: (offset: number, length: number) => Uint8Array.from(store.slice(offset, offset + length)),
+      append: (b: Uint8Array) => {
+        for (const byte of b) store.push(byte);
+      },
+      fsync: () => {},
+      truncate: (length: number) => {
+        store.length = length;
+      },
+      close: () => {},
+    }),
+  };
+  const reports: number[] = [];
+  const db = open({
+    path: "recovery-typed",
+    fs: memFs,
+    onRecovery: (info) => reports.push(info.truncatedBytes),
+  });
+  db.transact((tx) => tx.set(Uint8Array.of(1), Uint8Array.of(10)));
+  db.close();
+  expect(reports).toEqual([]); // a clean open has nothing to report
+});

@@ -19,7 +19,7 @@ import { parseArgs } from "node:util";
 import { forceUnlock } from "../adapter/node-fs.ts";
 import { LibreDbError, type Database } from "../core.ts";
 import { open } from "../index.ts";
-import { catalog, isReservedKey } from "../lens/catalog.ts";
+import { assertWellFormedText, catalog, isReservedKey } from "../lens/catalog.ts";
 import { kv } from "../lens/kv.ts";
 import { readonlyFileSystem } from "./readonly-fs.ts";
 
@@ -231,6 +231,18 @@ function importKeys({ path, args, io, force }: Ctx): number {
     }
     if (isReservedKey(key)) {
       io.err(`import: refusing to write a reserved key: ${key}`);
+      return 2;
+    }
+    try {
+      // The same invariant the kv lens enforces: a lone-surrogate string
+      // cannot round-trip through UTF-8, so two distinct malformed keys would
+      // silently collide on one stored key (and a malformed value would read
+      // back altered). Import writes through the kernel directly (one atomic
+      // transaction), so it must hold the line itself.
+      assertWellFormedText(key, "import key");
+      assertWellFormedText(value, "import value");
+    } catch (error) {
+      io.err(error instanceof Error ? error.message : String(error));
       return 2;
     }
     pairs.push([key, value]);

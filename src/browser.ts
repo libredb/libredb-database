@@ -11,7 +11,7 @@
  * this entry is the import graph: it reaches nothing in `node:`, so a bundler
  * can ship it to a browser. The node:fs adapter lives behind Node only.
  */
-import { open as openKernel, type Database, type FileSystem } from "./core.ts";
+import { open as openKernel, type Database, type FileSystem, type RecoveryInfo } from "./core.ts";
 
 export { version, LibreDbError } from "./core.ts";
 export type { ErrorCode, RecoveryInfo } from "./core.ts";
@@ -30,8 +30,8 @@ export type { Database, FileSystem, WalFile } from "./core.ts";
  * needs no filesystem.
  */
 export type BrowserOpenOptions =
-  | { readonly path: string; readonly fs: FileSystem }
-  | { readonly path?: never; readonly fs?: FileSystem };
+  | { readonly path: string; readonly fs: FileSystem; readonly onRecovery?: (info: RecoveryInfo) => void }
+  | { readonly path?: never; readonly fs?: FileSystem; readonly onRecovery?: never };
 
 /**
  * Open a database in the browser. The same runtime as the kernel's `open`, typed
