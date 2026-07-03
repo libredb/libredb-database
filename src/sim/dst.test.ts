@@ -45,16 +45,23 @@ const WAL = "wal";
 const SEED_BASE = Number(process.env.LIBREDB_DST_BASE ?? 0) || 0;
 const SEED_COUNT = Number(process.env.LIBREDB_DST_SEEDS ?? 50) || 50;
 
-test(`the crash/recovery invariant holds across ${SEED_COUNT} seeds`, () => {
-  for (let i = 0; i < SEED_COUNT; i++) {
-    const result = runSeed(SEED_BASE + i);
-    // A clean crash loses only the un-fsync'd torn tail, so the recovered state
-    // must equal the FULL committed model, and must be a valid committed prefix.
-    expect(result.passed, describeFailure(result)).toBe(true);
-    const states = committedPrefixStates(generateWorkload(result.seed));
-    expect(isCommittedPrefix(result.recovered, states)).toBe(true);
-  }
-});
+test(
+  `the crash/recovery invariant holds across ${SEED_COUNT} seeds`,
+  () => {
+    for (let i = 0; i < SEED_COUNT; i++) {
+      const result = runSeed(SEED_BASE + i);
+      // A clean crash loses only the un-fsync'd torn tail, so the recovered state
+      // must equal the FULL committed model, and must be a valid committed prefix.
+      expect(result.passed, describeFailure(result)).toBe(true);
+      const states = committedPrefixStates(generateWorkload(result.seed));
+      expect(isCommittedPrefix(result.recovered, states)).toBe(true);
+    }
+  },
+  // Scale the per-test timeout with the seed count: the default 50 seeds run in
+  // milliseconds, but a LIBREDB_DST_SEEDS=10000 soak takes seconds — it must
+  // fail on a broken invariant, never on bun's default 5s clock.
+  Math.max(5_000, SEED_COUNT * 5),
+);
 
 test("runSeed is deterministic: the same seed yields the same recovery", () => {
   const a = runSeed(424242);
