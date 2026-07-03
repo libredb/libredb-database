@@ -73,7 +73,11 @@ typecheck -> format -> lint -> knip -> build -> size -> test
   single commit, so keep the **PR title** conventional and descriptive. (The changelog comes from
   changesets, not commit messages — see below.)
 - If your change is user-facing, add a changeset: `bun run changeset`. This is what generates the
-  changelog and version bump at release time.
+  changelog and version bump at release time. Semver policy for the bump: runtime behavior changes
+  and new runtime capabilities are **minor**; documentation, tooling, and **type-only additions**
+  (new exported types, widened annotations — anything with no runtime effect) are **patch**;
+  anything that breaks an existing consumer is **major** (and, pre-1.0, lands with loud changelog
+  warnings, as the 0.2.0 on-disk format change did).
 - The CI gate mirrors `bun run gate` and runs on every PR, including forks.
 
 ## Reporting bugs and proposing features

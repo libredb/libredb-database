@@ -1,5 +1,5 @@
 ---
-"@libredb/libredb": minor
+"@libredb/libredb": patch
 ---
 
 Complete the API documentation surface and export the types it references.
