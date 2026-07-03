@@ -45,3 +45,4 @@ loop/
 .npmrc
 
 .qoder/
+.playwright-mcp/
