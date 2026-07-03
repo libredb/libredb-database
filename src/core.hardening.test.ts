@@ -316,10 +316,12 @@ test("mid-log corruption refuses to open with CORRUPT_WAL and truncates nothing"
   db.transact((tx) => tx.set(bytes(2), bytes(20)));
   db.close();
 
-  // Flip a payload byte of the FIRST record (offset: 8 header + 8 record
-  // header = 16). Intact record 2 sits after it, so this is damage to
-  // once-durable bytes, not a crash artifact.
-  file.data[16] = (file.data[16] as number) ^ 0xff;
+  // Flip a byte inside the FIRST record's PAYLOAD: 8 file-header bytes plus
+  // the 12-byte v1 record header (length, header checksum, payload checksum)
+  // put the payload at offset 20. Its checksum then fails while intact
+  // record 2 sits after it — damage to once-durable bytes, not a crash
+  // artifact.
+  file.data[20] = (file.data[20] as number) ^ 0xff;
   const sizeBefore = file.data.length;
 
   expect(errorFrom(() => open({ path: "wal", fs })).code).toBe("CORRUPT_WAL");

@@ -137,19 +137,20 @@ test("mid-log payload corruption refuses to open instead of truncating committed
   const db = open({ path: WAL, fs });
   runWorkload(db, steps);
 
-  // Corrupt a byte inside the SECOND record's payload: record 0 spans
-  // [RECORDS_BASE, RECORDS_BASE+8+len0); record 1's payload starts 8 bytes
-  // after that. Its CRC then fails while INTACT data (record 2) sits after it
-  // — that is not a crash artifact (only the final append can tear), it is
-  // damage to once-durable bytes. Truncating would destroy record 2's
-  // committed transaction, so recovery must refuse the open and leave every
-  // byte in place.
+  // Corrupt a byte inside the SECOND record's PAYLOAD. v1 records carry a
+  // 12-byte header (length, header checksum, payload checksum), so record 0
+  // spans [RECORDS_BASE, RECORDS_BASE+12+len0) and record 1's payload begins
+  // 12 header bytes after that. The payload CRC then fails while INTACT data
+  // (record 2) sits after it — that is not a crash artifact (only the final
+  // append can tear), it is damage to once-durable bytes. Truncating would
+  // destroy record 2's committed transaction, so recovery must refuse the
+  // open and leave every byte in place.
   const durable = fs.durableBytes(WAL);
   const len0 = readU32(durable, RECORDS_BASE);
   const before = fs.durableBytes(WAL);
-  fs.corrupt(WAL, RECORDS_BASE + 8 + len0 + 8);
+  fs.corrupt(WAL, RECORDS_BASE + 12 + len0 + 12);
 
-  expect(() => open({ path: WAL, fs })).toThrow(/corrupt/i);
+  expect(() => open({ path: WAL, fs })).toThrow(/corrupt WAL record at offset/i);
   // Refuse means refuse: the file was not truncated or rewritten (only the
   // one deliberately-flipped byte differs).
   const after = fs.durableBytes(WAL);
