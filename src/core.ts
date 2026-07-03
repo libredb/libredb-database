@@ -773,17 +773,20 @@ function openLog(
   let recovery: Recovery;
   try {
     recovery = recover(file);
+    // Inside the same guard as recover(): the callback is user code, and a
+    // throw from it must not leak the file handle either.
+    if (recovery.truncatedBytes > 0) onRecovery?.({ truncatedBytes: recovery.truncatedBytes });
   } catch (error) {
     // A refused open (foreign file, corruption, unsupported version, short
-    // read) must not leak the file handle; the refusal error stays primary.
+    // read, a throwing onRecovery) must not leak the file handle; the
+    // original error stays primary.
     try {
       file.close();
     } catch {
-      // The close failed after recovery already failed; surface the original.
+      // The close failed after the open already failed; surface the original.
     }
     throw error;
   }
-  if (recovery.truncatedBytes > 0) onRecovery?.({ truncatedBytes: recovery.truncatedBytes });
   let needsHeader = recovery.needsHeader;
   return {
     entries: recovery.entries,

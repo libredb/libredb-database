@@ -274,6 +274,11 @@ export function collectionHandle(
       return { changed: 1 };
     },
     get(id) {
+      // Validated like put(): a lone-surrogate id encodes to the replacement
+      // character's bytes, which would silently ALIAS a document legitimately
+      // stored under "\ufffd" — reading (and below, deleting) someone else's
+      // document instead of failing loudly.
+      assertWellFormedText(id, "document id");
       return store.transact((tx) => {
         ensure?.((key) => tx.get(key));
         const bytes = tx.get(keyOf(collection, id));
@@ -283,6 +288,7 @@ export function collectionHandle(
     delete(id) {
       // Read-before-delete in one transaction: the kernel's delete is a silent
       // no-op on a missing key, so this is how the lens tells 1 from 0 changes.
+      assertWellFormedText(id, "document id"); // same aliasing hazard as get()
       const changed = store.transact((tx) => {
         ensure?.((key) => tx.get(key));
         const k = keyOf(collection, id);

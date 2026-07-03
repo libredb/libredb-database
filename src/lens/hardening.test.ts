@@ -177,6 +177,29 @@ test("document ids and namespace names with a lone surrogate are rejected", () =
   db.close();
 });
 
+test("get and delete reject a lone-surrogate id too — a malformed id must not alias a real document", () => {
+  const db = open();
+  const users = doc(db, "users");
+  // A document stored under the REPLACEMENT CHARACTER id is perfectly legal.
+  // A malformed id encodes to those same bytes, so without validation on the
+  // read/delete paths it would silently read — or destroy — this document.
+  users.put("id-�", { owner: "legitimate" });
+  expect(errorFrom(() => users.get("id-\ud800")).code).toBe("INVALID_ARGUMENT");
+  expect(errorFrom(() => users.delete("id-\ud800")).code).toBe("INVALID_ARGUMENT");
+  expect(users.get("id-�")).toEqual({ owner: "legitimate" }); // unharmed
+  db.close();
+});
+
+test("relational get and delete reject a lone-surrogate primary key the same way", () => {
+  const db = open();
+  const t = table(db, "rows", SCHEMA);
+  t.insert({ id: "pk-�", n: 1 });
+  expect(errorFrom(() => t.get("pk-\ud800")).code).toBe("INVALID_ARGUMENT");
+  expect(errorFrom(() => t.delete("pk-\ud800")).code).toBe("INVALID_ARGUMENT");
+  expect(t.get("pk-�")).toEqual({ id: "pk-�", n: 1 }); // unharmed
+  db.close();
+});
+
 test("well-formed non-ASCII keys, ids, and values round-trip exactly", () => {
   const db = open();
   const store = kv(db);

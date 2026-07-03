@@ -104,7 +104,7 @@ const withWriteDb = <T>(path: string, force: boolean, fn: (db: Database) => T): 
   }
 };
 
-function inspect({ path, io }: Ctx): number {
+function inspect({ path, io, raw }: Ctx): number {
   return withReadDb(path, (db) => {
     const registry = catalog(db);
     io.out(`${path}  ${statSync(path).size} bytes`);
@@ -113,8 +113,12 @@ function inspect({ path, io }: Ctx): number {
       return 0;
     }
     for (const [name, entry] of registry) {
+      // Namespace names are user data too: the lens validator rejects ":" and
+      // surrogates but not control characters, so a name could otherwise carry
+      // terminal escapes into whoever inspects the file. Schemas are safe as
+      // JSON.stringify output (it escapes control characters itself).
       const schema = entry.schema === undefined ? "" : `  ${JSON.stringify(entry.schema)}`;
-      io.out(`  ${name}  ${entry.kind}${schema}`);
+      io.out(`  ${sanitize(name, raw)}  ${entry.kind}${schema}`);
     }
     return 0;
   });

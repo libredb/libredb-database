@@ -344,6 +344,42 @@ test("a CRC-valid record with a malformed payload is corruption, not ops", () =>
   expect(errorFrom(() => openNode({ path: path2 })).code).toBe("CORRUPT_WAL");
 });
 
+test("a throwing onRecovery callback does not leak the WAL file handle", () => {
+  const { fs, file } = faultFs();
+  let closed = 0;
+  const countingFs: FileSystem = {
+    open(path) {
+      const inner = fs.open(path);
+      return {
+        ...inner,
+        close() {
+          closed++;
+          inner.close();
+        },
+      };
+    },
+  };
+  // A database with a torn tail, so reopening will fire onRecovery.
+  const db = open({ path: "wal", fs: countingFs });
+  db.transact((tx) => tx.set(bytes(1), bytes(10)));
+  db.close();
+  file.data.push(0xff, 0xff, 0xff); // torn fragment shorter than a record header
+  expect(closed).toBe(1);
+
+  expect(() =>
+    open({
+      path: "wal",
+      fs: countingFs,
+      onRecovery: () => {
+        throw new Error("user callback exploded");
+      },
+    }),
+  ).toThrow(/user callback exploded/);
+  // The refused open still closed its file handle (and the truncation it
+  // performed before the callback fired remains applied — it was fsync'd).
+  expect(closed).toBe(2);
+});
+
 test("recovery reports a torn tail through onRecovery instead of dropping it silently", () => {
   const path = tempPath("reported");
   const db = openNode({ path });

@@ -331,6 +331,23 @@ test("get and scan escape control characters so stored data cannot drive the ter
   expect(scanned.out).toEqual(["evil=\\x1b[2Jcleared\\x07bell"]);
 });
 
+test("inspect escapes control characters in namespace names", () => {
+  const dir = mkdtempSync(join(tmpdir(), "libredb-cli-"));
+  dirs.push(dir);
+  const path = join(dir, "evil.libredb");
+  const db = open({ path });
+  // The lens validator rejects ":" and surrogates, but control characters are
+  // legal name bytes — so inspect must escape them on the way to a terminal.
+  doc(db, "evil\u001b[2Jns").put("d1", {});
+  db.close();
+  const r = cli("inspect", path);
+  expect(r.code).toBe(0);
+  expect(r.out.join("\n")).toContain("evil\\x1b[2Jns");
+  expect(r.out.join("\n")).not.toContain("\u001b");
+  // --raw opts out, matching get/scan.
+  expect(cli("inspect", path, "--raw").out.join("\n")).toContain("evil\u001b[2Jns");
+});
+
 test("--raw prints the stored bytes verbatim for callers that want them", () => {
   const path = fixture();
   cli("set", path, "evil", "\u001b[31mred");
