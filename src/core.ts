@@ -22,7 +22,7 @@
  */
 
 /** The LibreDB package version. Kept in sync with package.json. */
-export const version = "0.2.0";
+export const version = "0.2.1";
 
 /**
  * The stable failure codes of the kernel. Every error the kernel throws is a
