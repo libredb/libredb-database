@@ -29,7 +29,7 @@ RUN bun build --compile src/cli/main.ts --outfile /libredb
 # host directory are not root-owned (and a container escape holds no root).
 # Mount data writable by that uid, or pass `--user "$(id -u):$(id -g)"`. Pinned
 # by digest because the tag is rolling; refresh it periodically for base updates.
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:ce0d66bc0f64aae46e6a03add867b07f42cc7b8799c949c2e898057b7f75a151
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:66aa873a4a14fb164aa01296058efd8253744606d72715e45acface073359faa
 COPY --from=build /libredb /usr/local/bin/libredb
 WORKDIR /data
 ENTRYPOINT ["/usr/local/bin/libredb"]
