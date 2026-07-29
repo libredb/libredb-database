@@ -33,7 +33,7 @@ jobs:
       contents: read
       id-token: write # OIDC: signs the npm provenance attestation
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The release tag must name the version the tree actually carries: a tag
       # created before `changeset:version` (or a typo'd tag) must fail loudly
       # here, not ship binaries and images labeled with the wrong semver.
@@ -88,7 +88,7 @@ jobs:
       contents: read
       id-token: write # OIDC: token-less JSR publish via the repo-package linkage
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Use Node + `npx jsr publish` (JSR's canonical invocation) rather than
       # `bunx jsr`, which can resolve `jsr` to the repo-root jsr.json on some Bun
       # versions ("Cannot run jsr.json"). JSR publishes from source and runs its
@@ -138,7 +138,7 @@ jobs:
           - target: bun-windows-x64
             out: libredb-windows-x64.exe
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
@@ -171,7 +171,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Resolve version
         id: meta
         run: echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
