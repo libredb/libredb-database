@@ -81,19 +81,19 @@
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.4",
     "@biomejs/biome": "^2.5.1",
-    "@changesets/cli": "2.31.0",
-    "@commitlint/cli": "21.2.0",
+    "@changesets/cli": "2.31.1",
+    "@commitlint/cli": "21.2.1",
     "@commitlint/config-conventional": "21.2.0",
-    "@secretlint/secretlint-rule-preset-recommend": "13.0.2",
-    "@size-limit/preset-small-lib": "^12.1.0",
+    "@secretlint/secretlint-rule-preset-recommend": "13.0.4",
+    "@size-limit/preset-small-lib": "^13.0.1",
     "@types/bun": "latest",
     "eslint": "^10.0.0",
     "knip": "^6.20.0",
     "oxlint": "^1.71.0",
     "publint": "^0.3.21",
-    "secretlint": "13.0.2",
-    "size-limit": "^12.1.0",
-    "typescript": "^6.0.0",
+    "secretlint": "13.0.4",
+    "size-limit": "^13.0.1",
+    "typescript": "^7.0.2",
     "typescript-eslint": "^8.0.0"
   }
 }
