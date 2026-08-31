@@ -305,7 +305,7 @@ Honesty about scale (comprehension is the budget in v1, not throughput):
 | Topic | Where |
 |-------|-------|
 | Lens guides (kv, document, relational, catalog) | [`docs/guides/`](./docs/guides/) |
-| Browser — embed in a web app with no backend (in-memory + OPFS) | [`docs/BROWSER.md`](./docs/BROWSER.md) |
+| Browser — embed in a web app with no backend (in-memory + OPFS) | [`docs/BROWSER.md`](./docs/BROWSER.md) · [storage limits and persistence](./docs/BROWSER.md#7-storage-limits-and-persistence) |
 | CLI — inspect and edit `.libredb` files (`npx libredb`) | [`docs/CLI.md`](./docs/CLI.md) |
 | Standalone binaries — download and run, no Node/Bun | [`docs/BINARY.md`](./docs/BINARY.md) |
 | Docker — run the CLI from a container | [`docs/DOCKER.md`](./docs/DOCKER.md) |
