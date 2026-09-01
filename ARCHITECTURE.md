@@ -797,7 +797,7 @@ by staying small and correct, not by absorbing every feature.
 | `lens/catalog.ts`     | edge         | reserved namespace, registry, validate-on-reopen     |
 | `adapter/node-fs.ts`  | edge         | the real `node:fs` WAL adapter (fd reads, directory fsync, lock file) |
 | `adapter/opfs.ts`     | edge         | the browser OPFS WAL adapter                         |
-| `cli/`                | tooling      | the libredb CLI (inspect, stats, get, scan, set, delete, import) and the read-only filesystem |
+| `cli/`                | tooling      | the libredb CLI (inspect, stats, get, scan, export, set, delete, import) and the read-only filesystem |
 | `index.ts`            | public       | the Node npm export surface                          |
 | `browser.ts`          | public       | the browser export surface (no Node built-ins)       |
 | `sim/`                | test harness | simulated filesystem and crash-recovery oracle (DST) |

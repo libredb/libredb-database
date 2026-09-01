@@ -1,7 +1,7 @@
 /**
  * readonly-fs.test.ts — the CLI's read-only filesystem adapter.
  *
- * Inspection commands (inspect/get/scan/stats) must never mutate the file they
+ * Inspection commands (inspect/get/scan/stats/export) must never mutate the file they
  * read. That matters because open() runs recovery, which would truncate a torn
  * tail and so write to a "read-only" target. This adapter satisfies the kernel's
  * FileSystem seam for reads only: size and read work; append and fsync refuse;
