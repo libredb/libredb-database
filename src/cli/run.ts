@@ -7,13 +7,14 @@
  * bin shim (main.ts) is the only place that touches the real process.
  *
  * This is open-edge tooling over the public API, not kernel code: it adds no
- * durability logic. Read commands (inspect/stats/get/scan) open through the
- * read-only filesystem adapter so inspecting a file never mutates it. Write
+ * durability logic. Read commands (inspect/stats/get/scan/export) open through
+ * the read-only filesystem adapter so inspecting a file never mutates it. Write
  * commands (set/delete/import) rely on the kernel's exclusive open lock (a
  * second writer fails loudly; --force clears a lock whose holder is gone), and
- * import commits all keys in one transaction so a bulk load is atomic.
+ * import commits all keys in one transaction so a bulk load is atomic — export
+ * is its inverse, reading the whole dump back out in one transaction.
  */
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
 import { forceUnlock } from "../adapter/node-fs.ts";
@@ -67,6 +68,7 @@ const USAGE = [
   "  libredb stats <path>               Summarize the file: size and namespace counts",
   "  libredb get <path> <key>           Print the value stored at a key",
   "  libredb scan <path> <prefix>       Print key=value for every key under a prefix",
+  "  libredb export <path> <file.json>  Dump every key to a JSON object (the shape import reads)",
   "  libredb set <path> <key> <value>   Set a key to a value",
   "  libredb delete <path> <key>        Remove a key",
   "  libredb import <path> <file.json>  Bulk-set keys from a JSON object (one atomic commit)",
@@ -169,6 +171,82 @@ function scan({ path, args, io, raw }: Ctx): number {
   });
 }
 
+/**
+ * The byte range `export` scans: the whole keyspace a UTF-8 string can occupy.
+ *
+ * The kernel orders arbitrary byte keys with no maximum, so a half-open
+ * `[start, end)` cannot literally say "everything" — and it does not need to. A
+ * JSON dump can only carry keys that are UTF-8 TEXT, and no valid UTF-8 encoding
+ * begins with a byte above 0xF4 (the lead byte of U+10FFFF), so 0xF5 is above
+ * every key a lens or a CLI command can write. The start is the EMPTY key: it
+ * sorts before everything (including the reserved namespace, which is why
+ * reserved keys are filtered by predicate below rather than excluded by bound)
+ * and is itself a legal key.
+ */
+const EXPORT_START = new Uint8Array();
+const EXPORT_END = new Uint8Array([0xf5]);
+
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
+
+/**
+ * Decode one stored byte string for the dump, refusing bytes that are not valid
+ * UTF-8. Every lens and every CLI command writes well-formed UTF-8, so this can
+ * only fire for a key or value written as raw bytes straight through the kernel
+ * — and there a lossy decode would put U+FFFD in the dump, which imports back as
+ * DIFFERENT data (two distinct raw keys would collapse onto one JSON key).
+ * Export reads through the kernel directly, exactly as import writes through it,
+ * so it holds the same line import does with `assertWellFormedText`.
+ */
+const decodeText = (bytes: Uint8Array, what: string): string => {
+  try {
+    return strictUtf8.decode(bytes);
+  } catch {
+    throw new Error(
+      `libredb: a stored ${what} is not valid UTF-8 text (only reachable by writing raw bytes through the kernel ` +
+        `API); export refuses rather than emit replacement characters that would import back as different data`,
+    );
+  }
+};
+
+function exportKeys({ path, args, io }: Ctx): number {
+  const [file] = args;
+  if (file === undefined) {
+    io.err("missing <file>");
+    return 2;
+  }
+  const pairs = withReadDb(path, (db) =>
+    // ONE transaction for the whole dump, so the file is a single consistent
+    // snapshot — the read counterpart of import's one-transaction write. It
+    // reads the kernel range directly because the kv lens cannot express this
+    // scan: its range() takes STRING bounds, and no string encodes EXPORT_END.
+    db.transact((tx) => {
+      const rows: [string, string][] = [];
+      for (const entry of tx.getRange(EXPORT_START, EXPORT_END)) {
+        const key = decodeText(entry.key, "key");
+        // Skip LibreDB's reserved namespace (the catalog): import refuses those
+        // keys, so dumping them would produce a file import cannot read. Testing
+        // the published isReservedKey predicate rather than a hardcoded prefix is
+        // what keeps export correct if the reserved namespace ever grows.
+        if (isReservedKey(key)) continue;
+        rows.push([key, decodeText(entry.value, "value")]);
+      }
+      return rows;
+    }),
+  );
+  // Object.fromEntries, never `object[key] = value`: assigning "__proto__" on a
+  // plain object hits the inherited setter and defines NO own property, so that
+  // one key would silently vanish from the dump. fromEntries defines own
+  // properties, and JSON.parse does too — so the key survives the round trip.
+  // JSON.stringify does every bit of the escaping (quotes, backslashes, control
+  // characters, and it can never emit a lone surrogate); nothing here builds
+  // JSON text by hand. Indented with a trailing newline because a dump is a file
+  // humans read and diff. The write TRUNCATES an existing file, like a shell
+  // redirect; this is the only thing export writes.
+  writeFileSync(file, `${JSON.stringify(Object.fromEntries(pairs), null, 2)}\n`);
+  io.out(`export ${pairs.length} keys`);
+  return 0;
+}
+
 function set({ path, args, io, force }: Ctx): number {
   const [key, value] = args;
   if (key === undefined || value === undefined) {
@@ -265,6 +343,7 @@ const commands = new Map<string, (ctx: Ctx) => number>([
   ["stats", stats],
   ["get", get],
   ["scan", scan],
+  ["export", exportKeys],
   ["set", set],
   ["delete", remove],
   ["import", importKeys],

@@ -36,6 +36,7 @@ Usage:
   libredb stats <path>               Summarize the file: size and namespace counts
   libredb get <path> <key>           Print the value stored at a key
   libredb scan <path> <prefix>       Print key=value for every key under a prefix
+  libredb export <path> <file.json>  Dump every key to a JSON object (the shape import reads)
   libredb set <path> <key> <value>   Set a key to a value
   libredb delete <path> <key>        Remove a key
   libredb import <path> <file.json>  Bulk-set keys from a JSON object (one atomic commit)
@@ -97,6 +98,50 @@ user:1=Ada
 user:2=Grace
 ```
 
+#### `export <path> <file.json>` — JSON dump
+
+The counterpart of `import` below: it writes the **same JSON shape** `import`
+reads — one object of string values — so a dump round-trips back into a database.
+
+```sh
+$ libredb export app.libredb backup.json
+export 4 keys
+
+$ cat backup.json
+{
+  "color": "teal",
+  "logs:l1": "{\"message\":\"hi\"}",
+  "user:1": "Ada",
+  "user:2": "Grace"
+}
+
+$ libredb import restored.libredb backup.json   # restore into a fresh file
+import 4 keys
+```
+
+What a dump covers, exactly:
+
+- **The key-value layer** — the raw layer, so `document` and `relational` data
+  appears as the **internal prefixed entries** those lenses store (a document
+  `l1` in collection `logs` is the key `logs:l1` holding its JSON). There is no
+  per-lens export in v1: one dump, one flat object.
+- **Not the reserved namespace.** LibreDB's `\x00`-prefixed catalog space is left
+  out, because `import` refuses to write reserved keys (see [Safety](#safety)).
+  A restored file therefore holds every row but no catalog entry, so `inspect`
+  lists nothing until a lens registers a namespace again. For a *byte-exact*
+  copy, copy the file — see [Backup and restore](#backup-and-restore).
+- **UTF-8 text only.** Every lens and every CLI command writes well-formed
+  UTF-8. If a database holds raw non-UTF-8 bytes — only reachable by writing
+  through the kernel API directly — `export` refuses rather than emit
+  replacement characters that would import back as different data.
+
+Escaping is `JSON.stringify`'s (quotes, backslashes, control characters,
+Unicode), so values are stored verbatim rather than terminal-escaped the way
+`get`/`scan` print them; `--raw` does not apply. The output file is **overwritten**
+if it exists, like a shell redirect, and its parent directory must already exist.
+`import` **merges** into its target, so restore into a fresh path unless you mean
+to overlay.
+
 ### Write commands
 
 These take an advisory lock (see [Safety](#safety)) and commit through the WAL.
@@ -139,9 +184,10 @@ The CLI touches real database files, so it is deliberately careful:
 
 - **Reads never mutate the file.** Opening a database runs crash recovery, which
   would normally truncate a torn tail — a write. Read commands
-  (`inspect`/`stats`/`get`/`scan`) open through a **read-only filesystem adapter**:
-  recovery drops a torn tail *in memory only*; the bytes on disk are left exactly
-  as found.
+  (`inspect`/`stats`/`get`/`scan`/`export`) open through a **read-only filesystem
+  adapter**: recovery drops a torn tail *in memory only*; the bytes on disk are
+  left exactly as found. That adapter also has no lock at all, so a read never
+  creates a `<path>.lock` — `export` can dump a file a live writer holds open.
 - **A wrong path cannot destroy a file.** Opening a file that is not a LibreDB
   database (a typo, a text file) fails with a clear error and leaves the file
   byte-for-byte untouched — the on-disk `LRDB` header is checked before anything
@@ -179,9 +225,13 @@ file copy — with one rule.
 
 - **Restore:** copy the file back and open it — recovery replays it like any
   reopen. Nothing else to do.
-- **Export as text:** `libredb scan <path> ""` is not supported (an empty prefix
-  is refused); scan per namespace prefix, or use the programmatic lenses for a
-  structured export. A first-class `export` command is on the roadmap.
+- **Export as JSON:** `libredb export <path> <file.json>` dumps the key-value
+  layer as an import-compatible object — see
+  [`export`](#export-path-filejson--json-dump) for exactly what it covers.
+  Restore it with `libredb import`. This is a *logical* dump and not a
+  replacement for the file copy above: the copy is byte-exact (it carries the
+  catalog and the log itself), while a dump carries only the keys `import` can
+  write back.
 
 ---
 
@@ -203,9 +253,9 @@ libredb get app.libredb migration:done >/dev/null 2>&1 || libredb set app.libred
 
 ## Notes & limitations
 
-- `get`/`scan`/`set`/`delete`/`import` operate on the **key-value layer** (UTF-8
-  string keys and values). `inspect`/`stats` read the **catalog** for the richer
-  document/relational view.
+- `get`/`scan`/`export`/`set`/`delete`/`import` operate on the **key-value layer**
+  (UTF-8 string keys and values). `inspect`/`stats` read the **catalog** for the
+  richer document/relational view.
 - There is no interactive `repl` (it was intentionally left out for now).
 - The CLI is one of three identical front-ends — see the
   [standalone binary](./BINARY.md) and [Docker image](./DOCKER.md) for the same

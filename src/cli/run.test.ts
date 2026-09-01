@@ -4,9 +4,10 @@
  * run(argv, io) is the whole CLI as a pure function: it takes an argument vector
  * and an IO sink and returns an exit code, so every command and error path is
  * testable without spawning a process. These cover the read commands (inspect,
- * stats, get, scan) against real .libredb files, plus usage and error handling.
+ * stats, get, scan, export) against real .libredb files, plus usage and error
+ * handling.
  */
-import { appendFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +15,7 @@ import { afterEach, expect, test } from "bun:test";
 
 import { LOCK_SENTINEL } from "../adapter/node-fs.ts";
 import { open } from "../index.ts";
+import { isReservedKey } from "../lens/catalog.ts";
 import { doc } from "../lens/document.ts";
 import { kv } from "../lens/kv.ts";
 import { table } from "../lens/relational.ts";
@@ -160,6 +162,7 @@ test("reading never mutates the file (read-only open)", () => {
   cli("get", path, "user:1");
   cli("scan", path, "user:");
   cli("stats", path);
+  cli("export", path, `${path}.export.json`);
   expect(Bun.file(path).size).toBe(before);
 });
 
@@ -258,6 +261,110 @@ test("import rejects malformed JSON as a usage error (exit 2)", () => {
   const r = cli("import", path, file);
   expect(r.code).toBe(2);
   expect(r.err.join("\n")).toMatch(/json/i);
+});
+
+/** Read a dump written by `export` back as the object `import` would consume. */
+const readDump = (file: string): Record<string, string> =>
+  JSON.parse(readFileSync(file, "utf8")) as Record<string, string>;
+
+test("export dumps the kv layer in the shape import consumes, and the round trip restores it", () => {
+  const source = fixture();
+  // Widen the shared fixture into a mixed-namespace, mixed-encoding one: raw kv
+  // pairs, a document row, a table row, and the serialization cases a dump has
+  // to survive. "__proto__" is here because `object[key] = value` on a plain
+  // object would silently drop it (the inherited setter defines no own property).
+  const db = open({ path: source });
+  kv(db).set("quote", '"quoted" and a \\ backslash');
+  kv(db).set("control", "line\nbreak\ttab\u001b[2J");
+  kv(db).set("unicode", "üñíçödé \u{1f600} \u{10ffff}");
+  kv(db).set("empty-value", "");
+  kv(db).set("", "the empty key is a legal key");
+  kv(db).set("__proto__", "not a prototype");
+  table(db, "people", { primaryKey: "id", columns: { id: "string", name: "string" } }).insert({
+    id: "p1",
+    name: "Ada",
+  });
+  db.close();
+
+  const dump = `${source}.export.json`;
+  const exported = cli("export", source, dump);
+  expect(exported.code).toBe(0);
+  expect(exported.out).toEqual(["export 10 keys"]);
+
+  const dumped = readDump(dump);
+  // Raw kv pairs, plus document and table rows as their internal prefixed
+  // entries (v1 exports the kv layer; there is no per-lens serializer).
+  expect(dumped["user:1"]).toBe("Ada");
+  expect(dumped["logs:l1"]).toBe('{"message":"hi"}');
+  expect(dumped["people:p1"]).toBe('{"id":"p1","name":"Ada"}');
+  expect(dumped["quote"]).toBe('"quoted" and a \\ backslash');
+  // Verbatim, NOT sanitized: get/scan would print that ESC as \x1b so an
+  // untrusted value cannot drive a terminal, but a dump is data that has to
+  // import back unchanged; JSON.stringify escapes it as \u001b in the file.
+  expect(dumped["control"]).toBe("line\nbreak\ttab\u001b[2J");
+  expect(dumped["unicode"]).toBe("üñíçödé \u{1f600} \u{10ffff}");
+  expect(dumped["empty-value"]).toBe("");
+  expect(dumped[""]).toBe("the empty key is a legal key");
+  expect(dumped["__proto__"]).toBe("not a prototype");
+  expect(Object.keys(dumped)).toHaveLength(10);
+  expect(Object.values(dumped).every((value) => typeof value === "string")).toBe(true);
+  // The reserved catalog namespace is NOT dumped: import refuses those keys, so
+  // emitting them would produce a file import cannot read.
+  expect(Object.keys(dumped).filter(isReservedKey)).toEqual([]);
+
+  // The round trip: dump -> a brand-new database -> dump again. Comparing the two
+  // dumps proves every exported key AND value survived, not just the exit codes.
+  const restored = `${source}.restored.libredb`;
+  const imported = cli("import", restored, dump);
+  expect(imported.code).toBe(0);
+  expect(imported.out).toEqual(["import 10 keys"]);
+  const roundTripped = `${source}.round-trip.json`;
+  expect(cli("export", restored, roundTripped).code).toBe(0);
+  expect(readDump(roundTripped)).toEqual(dumped);
+  // And the restored database really answers reads with the same values.
+  expect(cli("get", restored, "user:1").out).toEqual(["Ada"]);
+  expect(cli("get", restored, "people:p1").out).toEqual(['{"id":"p1","name":"Ada"}']);
+});
+
+test("export leaves the database byte-identical and creates no lock file", () => {
+  const path = fixture();
+  const before = new Uint8Array(readFileSync(path));
+  const r = cli("export", path, `${path}.export.json`);
+  expect(r.code).toBe(0);
+  // Byte-for-byte, not merely the same size: export opens through the read-only
+  // filesystem adapter, which has no lock() at all, so a read can neither write
+  // nor announce itself.
+  expect(new Uint8Array(readFileSync(path))).toEqual(before);
+  expect(existsSync(`${path}.lock`)).toBe(false);
+});
+
+test("export refuses a database holding raw non-UTF-8 bytes instead of dumping replacement characters", () => {
+  const dir = mkdtempSync(join(tmpdir(), "libredb-cli-"));
+  dirs.push(dir);
+  const path = join(dir, "raw.libredb");
+  const db = open({ path });
+  // Only reachable by writing through the kernel directly: 0x80 is a bare UTF-8
+  // continuation byte. Decoded loosely it becomes U+FFFD, which would import
+  // back as a different key — so export refuses the whole dump instead.
+  db.transact((tx) => tx.set(new Uint8Array([0x80]), new TextEncoder().encode("v")));
+  db.close();
+  const r = cli("export", path, `${path}.export.json`);
+  expect(r.code).toBe(1);
+  expect(r.err.join("\n")).toMatch(/not valid UTF-8/i);
+});
+
+test("export overwrites an existing output file rather than appending to it", () => {
+  const path = fixture();
+  const dump = `${path}.export.json`;
+  writeFileSync(dump, "stale bytes from an earlier dump");
+  expect(cli("export", path, dump).code).toBe(0);
+  expect(readDump(dump)["user:1"]).toBe("Ada"); // it parses at all: the old bytes are gone
+});
+
+test("export with no file is a usage error", () => {
+  const r = cli("export", fixture());
+  expect(r.code).toBe(2);
+  expect(r.err.join("\n")).toMatch(/file/i);
 });
 
 /** A lock file naming a live holder: this very test process. */
