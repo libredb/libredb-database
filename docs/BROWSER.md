@@ -8,7 +8,8 @@ a server's disk.
 
 This guide explains how a web app (React, Vite, Astro, Next.js, plain ESM, …)
 uses LibreDB directly in the browser, the two storage modes, the one hard rule
-(OPFS needs a Web Worker), and the framework-specific gotchas (mostly SSR).
+(OPFS needs a Web Worker), the framework-specific gotchas (mostly SSR), and how
+much data you can actually keep there (§7).
 
 > TL;DR: import from `@libredb/libredb/browser`. `open()` is **in-memory** and
 > works anywhere. For **durable** storage, run LibreDB **in a Web Worker** and
@@ -65,8 +66,9 @@ write survives a tab crash, a page reload, and a browser restart; what a sudden
 power cut can lose is browser-and-OS dependent. Treat OPFS durability as "as
 strong as the browser's flush", not as a battery-backed guarantee (verifying
 this per engine is tracked in
-[#10](https://github.com/libredb/libredb/issues/10)). Storage may also be
-evicted under pressure unless you request persistence — see the checklist below.
+[#10](https://github.com/libredb/libredb-database/issues/10)). Storage may also
+be evicted under pressure unless you request persistence, and the database has
+size limits well below the browser's quota — both are in §7.
 
 ---
 
@@ -292,9 +294,8 @@ setup from §4.1.
   dedicated Web Workers, over HTTPS or `localhost`. In-memory `open()` has neither
   requirement.
 - **Persistence can be evicted.** OPFS data is per-origin and may be cleared by the
-  browser under storage pressure. Call `await navigator.storage.persist()` to
-  request durable (eviction-resistant) storage, and `navigator.storage.estimate()`
-  to check quota.
+  browser under storage pressure unless you request persistent storage. How much
+  space you get, how to ask for it, and what happens when it runs out are in §7.
 - **In-memory is ephemeral.** `open()` data vanishes on reload — by design.
 - **Release the handle.** Call `db.close()` (which closes the sync access handle)
   when you're done, e.g. on `worker` teardown, so the file's exclusive lock is
@@ -305,7 +306,249 @@ setup from §4.1.
 
 ---
 
-## 7. Which mode should I use?
+## 7. Storage limits and persistence
+
+"How big can my database be in the browser, and will it survive?" Three
+different ceilings answer that, and they are not the same number:
+
+1. **Memory** — the whole store lives in RAM. This is the real limit today.
+2. **WAL growth** — the file grows with write *history*, not just live data.
+3. **The origin's storage quota** — usually the largest of the three, and the
+   only one people expect.
+
+Quota is the number everyone asks about; memory is the number that actually
+stops you. Both are below.
+
+### 7.1 The quota: OPFS is not `localStorage`
+
+The 5-10 MB figure you remember belongs to **Web Storage** (`localStorage` /
+`sessionStorage`) and does not apply here. OPFS draws on the Storage Standard's
+per-origin quota pool — shared with IndexedDB and the Cache API — and that pool
+is a fraction of the *disk*, not a handful of megabytes.
+
+Approximate per-origin quotas. These are browser *policy*: they vary by browser,
+version, device, and free disk space, so treat them as orientation and measure at
+runtime (§7.2) rather than budgeting against the table.
+
+| Browser | Best-effort (the default) | With persistent storage granted |
+| --- | --- | --- |
+| Chrome / Edge (Chromium) | up to ~60% of total disk | the same ~60% |
+| Firefox | the smaller of ~10% of disk **or 10 GiB** | up to ~50% of disk (capped at 8 TiB) |
+| Safari / WebKit (macOS 14+, iOS 17+) | ~60% of disk in the browser; ~15% for a non-browser app embedding web content | the same |
+
+Two details that catch people out: Firefox's best-effort mode is capped at
+**10 GiB** however large the disk is, and in WebKit a cross-origin iframe gets
+roughly a tenth of its parent's quota. Eviction is also all-or-nothing — an
+origin's storage is dropped as a whole, never partially.
+
+Reference: MDN,
+[Storage quotas and eviction criteria](https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria).
+
+### 7.2 Ask the browser: `navigator.storage.estimate()`
+
+The runtime number is worth more than any table, and it works in the Worker that
+owns the database:
+
+```ts
+// Window and Worker, secure contexts only.
+const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+console.log({ usage, quota, headroom: quota - usage });
+```
+
+Two caveats. The values are deliberately imprecise — browsers pad and deduplicate
+them — so use them for headroom decisions ("am I near the edge?"), never as an
+exact byte budget. And `usage` covers the **whole origin**, IndexedDB and Cache
+API included, not just your `.libredb` file.
+
+### 7.3 Persistent storage and eviction
+
+By default an origin's storage is **best-effort**: under disk pressure the
+browser evicts least-recently-used origins, and an evicted origin loses
+everything at once. **Persistent** storage takes the origin out of that sweep —
+it is then cleared only by explicit user action.
+
+You ask for it with `navigator.storage.persist()`. Two facts to design around:
+
+- **It is a request, not a switch.** The browser decides by its own rules
+  (Firefox prompts; Chromium decides from engagement signals). Read the boolean
+  it resolves to and handle `false`.
+- **It is a `Window` method.** `persist()` is not exposed in workers, so it
+  cannot be called from the database Worker. `persisted()` and `estimate()`
+  *are* worker-exposed.
+
+So the persist call belongs in the **main-thread half of the Worker setup** from
+§4.2, next to where the Worker is spawned:
+
+```ts
+// main thread — alongside creating the DB worker
+const worker = new Worker(new URL("./db.worker.ts", import.meta.url), { type: "module" });
+
+// persist() exists only on Window: call it here, never inside the Worker.
+if (navigator.storage?.persist) {
+  const granted = await navigator.storage.persist();
+  if (!granted) {
+    // Still best-effort. The origin can be evicted under disk pressure, so keep
+    // an export or sync path — do not treat the database as the only copy.
+  }
+}
+```
+
+Inside the Worker you can still read the state you were granted:
+
+```ts
+// db.worker.ts — persisted() and estimate() are available in workers
+const persistent = await navigator.storage.persisted(); // boolean
+const { usage, quota } = await navigator.storage.estimate();
+```
+
+**Safari/WebKit adds a rule of its own.** With cross-site tracking prevention
+enabled, an origin the user has not interacted with for seven days of browser use
+has its script-created storage deleted. A web app added to the Home Screen is not
+part of Safari and keeps its own counter of days of use, which using the app
+resets — that is a separate counter, not an exemption. For a database this is the
+eviction risk that matters more than quota, and persistent storage is what
+mitigates it. (References: MDN, above; WebKit,
+[Full Third-Party Cookie Blocking and More](https://webkit.org/blog/10218/full-third-party-cookie-blocking-and-more/).)
+
+### 7.4 What happens when the quota runs out
+
+Quota exhaustion is the browser's `ENOSPC`, and it travels LibreDB's existing
+IO-failure path — there is no browser-specific error handling, by design:
+
+```
+  OPFS write() exceeds the origin's quota
+        |  throws QuotaExceededError
+        v
+  opfsFileSystem(handle).append()      adapter/opfs.ts - passes it through
+        |
+        v
+  kernel commit path: append -> fsync  core.ts - catches, latches
+        |
+        v
+  LibreDbError { code: "FAILED", cause: QuotaExceededError }
+```
+
+Concretely:
+
+- the `transact()` that hit the wall throws `code: "FAILED"`, carrying the
+  browser's `QuotaExceededError` as `cause`;
+- its writes are **not** applied in memory — RAM and the file stay on the last
+  good state;
+- the database **latches**. Every later `transact()` throws `FAILED` too,
+  **including read-only ones** (every read runs inside a transaction), until you
+  `close()` and open again;
+- reopening replays the log, truncates any partially-written tail record the
+  failure left — which also returns those bytes — and reports the truncation
+  through `onRecovery`.
+
+```ts
+import { LibreDbError, kv } from "@libredb/libredb/browser";
+
+try {
+  kv(db).set("user:1", "Ada");
+} catch (error) {
+  if (error instanceof LibreDbError && error.code === "FAILED") {
+    const cause = error.cause as { name?: string } | undefined;
+    if (cause?.name === "QuotaExceededError") {
+      // Out of quota. This instance is done: close(), release the sync access
+      // handle, free space, then open again.
+    }
+  }
+}
+```
+
+Why the latch exists at all — appending past a torn record would let the next
+recovery silently destroy commits that already returned — is the durability
+contract in [`RELIABILITY.md`](./RELIABILITY.md); this section only connects the
+browser's failure to it.
+
+**One trap specific to append-only storage: deleting data does not free quota.**
+A delete appends a tombstone record, so the file gets *bigger*. Recovering space
+means compaction (§7.5), not deletion.
+
+### 7.5 WAL growth: quota is spent on history, not just data
+
+The file is a write-ahead log, so every set, overwrite, and delete appends a
+record and nothing is ever edited in place. Memory holds the current result; the
+file holds the whole history. A 500 MB live data set that has been rewritten many
+times can easily sit behind a multi-gigabyte file — the quota is consumed by
+superseded versions and tombstones, not by your data.
+
+Compaction is what reclaims that history (one record per live key, superseded
+versions and tombstones dropped). **It is not built yet** — it is tracked as
+[#12](https://github.com/libredb/libredb-database/issues/12). Until it lands the
+only way to reclaim space is to do it by hand: read the live data out of the
+database, write it into a fresh file, and remove the old one. Treat that as a
+stopgap, not a feature.
+
+### 7.6 The ceiling that actually stops you: memory
+
+Quota is rarely the first wall. LibreDB keeps the **whole store in memory** as one
+sorted array (the file is only the log that rebuilds it), and `open()` currently
+reads the **entire log into a single `Uint8Array`** before replaying it. So:
+
+- **steady state** costs roughly your live data set, in RAM, in the Worker;
+- **peak at open** is the log's bytes *plus* the live set they replay into — up to
+  about twice the file size when most of the log is still live.
+
+Above that sit two harder caps, neither of them LibreDB's:
+
+- **The engine's maximum typed-array length.** Firefox documents 2^33 (8 GiB) on
+  64-bit builds and 2 GiB - 1 on 32-bit ones; other engines set their own limits.
+  Once the log exceeds that cap, `open()` cannot allocate its buffer at all,
+  however much quota is free.
+- **The tab or Worker's memory budget**, which is much lower on mobile, in
+  embedded WebViews, and in headless/CI browsers than the engine cap suggests.
+
+Rules of thumb for the engine as it stands — guidance, not guarantees:
+
+| Live data set | What to expect |
+| --- | --- |
+| up to ~100 MB | comfortable everywhere, mobile included |
+| ~500 MB | fine on desktop; already heavy on a phone |
+| ~1 GB | the practical edge — slow opens, and peak memory is the risk |
+| ~10 GB | out of reach today, whatever quota `estimate()` reports |
+
+These are the same limits LibreDB has on Node: they come from the in-memory store
+(see [`ARCHITECTURE.md`](../ARCHITECTURE.md) section 5), not from the browser.
+Bounding `open()`'s memory by streaming recovery record-by-record is tracked in
+[#64](https://github.com/libredb/libredb-database/issues/64).
+
+**So a reported 60 GB of free quota does not mean a usable 60 GB database.** Size
+against memory first, then check the quota can hold the log that memory implies.
+
+### 7.7 A worked example
+
+An offline-first app keeps customer records, cached API responses, and a local
+event log in one `.libredb` file. At launch: 300 MB live, a 400 MB file. Six
+months of edits later: **450 MB live, a 2.2 GB file** — the extra 1.8 GB is
+superseded versions and tombstones, not data.
+
+What each piece of the picture tells the developer:
+
+- **`estimate()`** reports `usage` near 2.2 GB against a `quota` in the tens of
+  GB. Plenty of headroom, so quota is not the problem — and knowing that is the
+  point of asking at runtime instead of guessing (§7.2).
+- **`persist()`** matters more than the headroom does. At 2.2 GB this origin is a
+  large, attractive eviction target on a full disk, and in Safari seven days
+  without interaction is enough on its own (§7.3).
+- **Quota exhaustion**, if the disk did fill, would latch the database on the next
+  write — reads included — until close and reopen (§7.4). Deleting records to
+  recover would make the file *larger*.
+- **Compaction** is what turns 2.2 GB back into ~450 MB. Until #12 lands, that is
+  a manual copy into a fresh file (§7.5).
+- **Memory** is the ceiling that bites first anyway. 450 MB live is workable on a
+  desktop; the 2.2 GB log is the real cost, because opening it allocates the whole
+  file in one buffer before replaying it into a 450 MB store (§7.6). This app
+  would start failing to open on mobile long before it ran out of quota.
+
+The practical fix set, in order: compact (manually, today) to keep the log near
+the live set; request persistence; check `estimate()` before large imports; and
+keep the live set inside the memory budget of the weakest device you support.
+
+---
+
+## 8. Which mode should I use?
 
 - **Ephemeral UI state, prototypes, tests, demos** → in-memory `open()`, main
   thread. Simplest possible setup.
