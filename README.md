@@ -147,6 +147,7 @@ npx libredb inspect data.libredb          # namespaces, kinds, and table schemas
 npx libredb stats data.libredb            # file size and namespace counts
 npx libredb get data.libredb user:1       # print one value
 npx libredb scan data.libredb user:       # print key=value under a prefix
+npx libredb export data.libredb dump.json # dump every key as import-compatible JSON
 npx libredb set data.libredb user:1 Ada   # set a key
 npx libredb delete data.libredb user:1    # remove a key
 npx libredb import data.libredb seed.json # bulk-set from a JSON object, atomically
