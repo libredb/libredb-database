@@ -16,7 +16,7 @@
 # build; the tag stays for readability and tracks .bun-version (1.3.14, the same
 # Bun the binaries job pins via setup-bun). Bump both the tag and the digest
 # together when .bun-version changes.
-FROM oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 AS build
+FROM oven/bun:1.4.1@sha256:9e123d5fc069e29d519fd4c981afb61b8542ac80274771961136db1e4538d53e AS build
 WORKDIR /src
 # bun build --compile bundles only the source it reaches; the CLI imports nothing
 # outside src/, so no package.json/tsconfig and no `bun install` are needed.
