@@ -66,7 +66,7 @@ power cut can lose is browser-and-OS dependent. Treat OPFS durability as "as
 strong as the browser's flush", not as a battery-backed guarantee (verifying
 this per engine is tracked in
 [#10](https://github.com/libredb/libredb/issues/10)). Storage may also be
-evicted under pressure unless you request persistence — see the checklist below.
+evicted under pressure unless you request persistence — see §7.
 
 ---
 
@@ -120,6 +120,10 @@ let db: Database;
 // Acquiring the handle is async and happens ONCE; using it (and the kernel) is
 // synchronous, so the database itself stays sync.
 const ready = (async () => {
+  // Ask for eviction-resistant storage before the first byte is written. This
+  // is a request, not a command — read back navigator.storage.persisted() if
+  // the answer matters (§7.2).
+  await navigator.storage.persist();
   const root = await navigator.storage.getDirectory();
   const file = await root.getFileHandle("app.libredb", { create: true });
   const handle = await file.createSyncAccessHandle(); // exclusive, Worker-only
@@ -294,7 +298,8 @@ setup from §4.1.
 - **Persistence can be evicted.** OPFS data is per-origin and may be cleared by the
   browser under storage pressure. Call `await navigator.storage.persist()` to
   request durable (eviction-resistant) storage, and `navigator.storage.estimate()`
-  to check quota.
+  to check quota. The full picture — quota per engine, Safari's 7-day ITP eviction,
+  and what a quota-exceeded write does — is §7.
 - **In-memory is ephemeral.** `open()` data vanishes on reload — by design.
 - **Release the handle.** Call `db.close()` (which closes the sync access handle)
   when you're done, e.g. on `worker` teardown, so the file's exclusive lock is
@@ -305,7 +310,104 @@ setup from §4.1.
 
 ---
 
-## 7. Which mode should I use?
+## 7. Storage limits and persistence
+
+"How big can my database be in a browser, and will it survive?" deserves one
+honest answer instead of folklore. There are three separate limits, none of
+them the 5-10 MB `localStorage` story: the **quota** (how much disk the origin
+may use), **eviction** (whether the browser keeps it at all), and **memory**
+(the real ceiling today, §7.4).
+
+### 7.1 Quota: OPFS is not localStorage
+
+LibreDB's durable mode writes one file into OPFS, which draws from the same
+Storage Standard quota pool as IndexedDB — per-origin and engine-sized:
+
+| Browser | Per-origin quota |
+| --- | --- |
+| Chrome / Edge | ~60% of disk |
+| Firefox | ~10% of disk; ~50% with `persist()` |
+| Safari / WebKit | ~60% in-browser; ~15% in embedded WebViews |
+
+Those are engine defaults, not promises — a constrained headless Chromium
+profile still reported a 10 GB quota to libredb.org in testing. The runtime
+truth for your origin is
+[`navigator.storage.estimate()`](https://developer.mozilla.org/en-US/docs/Web/API/StorageManager/estimate),
+which reports current usage and quota:
+
+```ts
+const { usage, quota } = await navigator.storage.estimate();
+```
+
+The authoritative summary is MDN's
+[Storage quotas and eviction criteria](https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria).
+
+### 7.2 Eviction: the part that loses data silently
+
+Hitting the quota fails a write loudly (§7.3). Losing storage silently is
+worse, and it happens through eviction:
+
+- Without `navigator.storage.persist()`, per-origin storage is **best-effort**:
+  the browser may evict it under disk pressure.
+- Safari's Intelligent Tracking Protection deletes **all script-writable
+  storage** for an origin after 7 days without user interaction (home-screen
+  web apps are exempt). For a database this is the headline risk, above quota.
+
+So request persistence before the first byte matters — the Worker example in
+§4.1 calls `await navigator.storage.persist()` while acquiring the handle — and
+read back what the browser decided:
+
+```ts
+await navigator.storage.persist();   // request; engines may grant or deny
+await navigator.storage.persisted(); // the current state — check this
+```
+
+`persist()` is a request, not a command: an engine may grant it automatically,
+heuristically (typically once the user has engaged with the site), or never.
+Check `persisted()` and design for the "not granted" case — export anything
+you cannot afford to lose.
+
+### 7.3 Running out of quota: the failure latch
+
+An OPFS write that hits the quota throws `QuotaExceededError` from the sync
+access handle — the browser's ENOSPC. LibreDB treats it exactly like ENOSPC on
+Node: since v0.2.0 a failed append or fsync **latches the database**, so every
+later `transact()` throws `code: "FAILED"` (the quota error rides along as
+`cause`) until the database is closed and reopened; reopening repairs the log
+tail. In practice, when the origin quota runs out:
+
+- every commit that returned before the failure survives the reopen,
+- the failing transaction throws with the quota error as its cause,
+- nothing is silently truncated or lost.
+
+This is the [`RELIABILITY.md`](./RELIABILITY.md) durability contract applied to
+the browser's ENOSPC — worth knowing before it happens.
+
+### 7.4 The practical ceiling is memory, not disk
+
+The whole store lives in RAM, and `open()` currently reads the entire WAL into
+one `Uint8Array` (engine ceilings: ~8 GiB on 64-bit, ~2 GiB on 32-bit; opening
+transiently needs roughly 2x the file size). Honest guidance, browser and Node
+alike:
+
+- **100 MB** — comfortable everywhere, on any engine.
+- **500 MB** — fine on desktop-class browsers.
+- **~1 GB** — the practical edge today.
+- **10 GB** — out of reach regardless of what `estimate()` reports. What
+  changes this: streaming recovery
+  ([#64](https://github.com/libredb/libredb-database/issues/64)) and compaction
+  ([#12](https://github.com/libredb/libredb-database/issues/12)).
+
+### 7.5 The log consumes quota until compaction lands
+
+The WAL is append-only, so quota is consumed by history, not live data: deleted
+keys free no space, and `estimate().usage` grows with every write until
+compaction ([#12](https://github.com/libredb/libredb-database/issues/12))
+lands.
+
+---
+
+## 8. Which mode should I use?
 
 - **Ephemeral UI state, prototypes, tests, demos** → in-memory `open()`, main
   thread. Simplest possible setup.
